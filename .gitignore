@@ -1,0 +1,7 @@
+*.tree
+*.json
+*.jar
+__pycache__
+/apted
+/gumtree-*-SNAPSHOT
+/gumtree
