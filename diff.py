@@ -32,11 +32,10 @@ def read_tree(filename):
     Use gumtree parse to convert the source file to a syntax tree in JSON
     format. Return the tree.
     """
-    treefile = '%s.json' % filename
-    # os.unlink(treefile)
-    if not os.path.isfile(treefile):
-        os.system('./gumtree.sh parse %s > %s' % (filename, treefile))
-    t = json.load(open(treefile))['root']
+    treefilename = '%s.json' % filename
+    with open(treefilename, 'w') as treefile:
+        Popen(['./gumtree.sh', 'parse', filename], stdout=treefile).wait()
+    t = json.load(open(treefilename))['root']
     initialize_tree(t)
     return t
 
@@ -46,12 +45,15 @@ def GTmappings():
 
 LEFT = 1
 RIGHT = 2
-def add_mapping(M, src, dst):
-    debug('add mapping from %d to %d' % (src, dst))
-    left = (LEFT, src)
-    right = (RIGHT, dst)
-    M[left] = right
-    M[right] = left
+def add_mapping(M, tsrc, tdst):
+    src = tsrc['id']
+    dst = tdst['id']
+    if mapping_allowed(tsrc, tdst, M):
+        debug('add mapping from %d to %d' % (src, dst))
+        left = (LEFT, src)
+        right = (RIGHT, dst)
+        M[left] = right
+        M[right] = left
 
 def mhasleft(M, id1):
     """Return true if there is some mapping (id1, _)."""
@@ -103,13 +105,11 @@ def isomorphic(t1, t2):
     c2 = t2['children']
     return (label(t1) == label(t2) and
             len(c1) == len(c2) and
-            # TODO the order should not matter!
             all(isomorphic(c1[i], c2[i]) for i in range(len(c1))))
 
 def isomorphic_subtrees(t1, t2):
     """Get all subordinate isomorphic subtrees of two isomorphic trees."""
     assert isomorphic(t1, t2)
-    # TODO this assumes same ordering, see above
     yield (t1, t2)
     c1 = t1['children']
     c2 = t2['children']
@@ -123,6 +123,9 @@ def initialize_tree(t, id=0, parent=None):
     Set the id of each subtree to its post-order number in the tree, starting at 0
     """
     height = 0
+    def nodekey(node):
+        return (node['typeLabel'], node.get('label'))
+    # sorted(t['children'], key=nodekey)
     for c in t['children']:
         (id, child_height) = initialize_tree(c, id, t)
         height = max(height, child_height)
@@ -222,8 +225,7 @@ def GTalgorithm1(T1, T2, minHeight):
     GTpush(T1, L1)
     GTpush(T2, L2)
 
-    # TODO why is it a >= and not > as described in GT.pdf
-    while min(GTpeekMax(L1), GTpeekMax(L2)) >= minHeight:
+    while min(GTpeekMax(L1), GTpeekMax(L2)) > minHeight:
         if GTpeekMax(L1) != GTpeekMax(L2):
             if GTpeekMax(L1) > GTpeekMax(L2):
                 for t in GTpop(L1):
@@ -237,9 +239,9 @@ def GTalgorithm1(T1, T2, minHeight):
             # debug('popped %s and %s' % (len(H1), len(H2)))
             H1xH2 = ((t1, t2) for t1 in H1 for t2 in H2)
             for (t1, t2) in H1xH2:
-                # debug('trying to match %s, %s' % (sn(t1), sn(t2)))
+                debug('trying to match %s, %s' % (sn(t1), sn(t2)))
                 if isomorphic(t1, t2):
-                    # debug('isomorphic!')
+                    debug('isomorphic!')
                     if (any(isomorphic(t1, tx) and tx is not t2
                             for tx in postorder(T2)) or
                         any(isomorphic(tx, t2) and tx is not t1
@@ -249,7 +251,7 @@ def GTalgorithm1(T1, T2, minHeight):
                     else:
                         for (ta, tb) in isomorphic_subtrees(t1, t2):
                             # print(ta['id'], tb['id'])
-                            add_mapping(M, ta['id'], tb['id'])
+                            add_mapping(M, ta, tb)
             for t1 in H1:
                 if not mhasleft(M, t1['id']) and not lhasleft(A, t1['id']):
                     # debug('opening %s' % sn(t1))
@@ -269,9 +271,8 @@ def GTalgorithm1(T1, T2, minHeight):
         (id1, id2) = A.pop(0)
         t1 = T1postorder[id1]
         t2 = T2postorder[id2]
-        # add_mapping(M, t1['id'], t2['id'])
         for (ta, tb) in isomorphic_subtrees(t1, t2):
-            add_mapping(M, ta['id'], tb['id'])
+            add_mapping(M, ta, tb)
         A = [(u1, u2) for (u1, u2) in A if u1 != t1]
         A = [(u1, u2) for (u1, u2) in A if u2 != t2]
     return M
@@ -313,7 +314,12 @@ def APTEDmapping(t1, t2):
     f2.write(tree2bracketencoding(t2))
     f1.flush()
     f2.flush()
+    open('1.tmp', 'w').write(tree2bracketencoding(t1))
+    open('2.tmp', 'w').write(tree2bracketencoding(t2))
+    # if DEBUG:
+    #     input()
     p = Popen(['./apted.sh', '-m', '-f', f1.name, f2.name], stdout=PIPE)
+    # p = Popen(['java', '-jar', 'RTED_v1.2.jar', '-l', '-m', '-f', f1.name, f2.name], stdout=PIPE)
     edit_distance = float(p.stdout.readline().strip())
     mappings = []
     for line in p.stdout:
@@ -328,33 +334,52 @@ def APTEDmapping(t1, t2):
         mappings += [(src, dst)]
     return mappings
 
+def mapping_allowed(ta, tb, M):
+    a_mapsto_b = mleft(M, ta['id']) == tb['id']
+    sametype = ta['typeLabel'] == tb['typeLabel']
+    pa = ta['parent']
+    pb = tb['parent']
+    parents_sametype = ((pa is None and pb is None) or
+        (pa is not None and pb is not None and
+        pa['typeLabel'] == pb['typeLabel'])
+    )
+    # TODO is this always desirable
+    either_mapped = mhasleft(M, ta['id']) or mhasright(M, tb['id'])
+    if either_mapped:
+        return False
+    return not a_mapsto_b and sametype and parents_sametype
+
+def add_optimal_mappings(T1, T2, M, maxSize):
+    T1postorder = list(postorder(T1))
+    T2postorder = list(postorder(T2))
+    if max(len(GTs(T1)), len(GTs(T2))) < maxSize:
+        R = APTEDmapping(T1, T2)
+        for (ida, idb) in R:
+            # APTED encodes nodes in post-order numbering starting
+            # from 1
+            ida -= 1
+            idb -= 1
+            ta = T1postorder[ida]
+            tb = T2postorder[idb]
+            add_mapping(M, ta, tb)
+
 def GTalgorithm2(T1, T2, M, minDice, maxSize):
     """Bottom-up algorithm to complete the mappings."""
-    debug("algorithm 2")
     T1postorder = list(postorder(T1))
     T2postorder = list(postorder(T2))
     for t1 in postorder(T1):
+        if t1 is T1:
+            add_mapping(M, T1, T2)
+            add_optimal_mappings(T1, T2, M, maxSize)
+            break
         matched = mhasleft(M, t1['id'])
         matched_children = any(mhasleft(M, c['id']) for c in t1['children'])
         if not matched and matched_children:
             t2 = GTcandidate(t1, M, T2)
             debug('candidate for', sn(t1), 'is', sn(t2))
             if t2 is not None and GTdice(t1, t2, M) > minDice:
-                add_mapping(M, t1['id'], t2['id'])
-                if max(len(GTs(t1)), len(GTs(t2))) < maxSize:
-                    R = APTEDmapping(t1, t2)
-                    for (ida, idb) in R:
-                        # APTED encodes nodes in post-order numbering starting
-                        # from 1
-                        ida -= 1
-                        idb -= 1
-                        ta = T1postorder[ida]
-                        tb = T2postorder[idb]
-                        a_mapsto_b = mleft(M, ta['id']) == tb['id']
-                        if not a_mapsto_b and ta['typeLabel'] == tb['typeLabel']:
-                            # debug('APTED suggests mapping %s to %s' %
-                            #       (sn(ta), sn(tb)))
-                            add_mapping(M, ta['id'], tb['id'])
+                add_mapping(M, t1, t2)
+                add_optimal_mappings(t1, t2, M, maxSize)
 
 def indentf(maxheight):
     def indent(t):

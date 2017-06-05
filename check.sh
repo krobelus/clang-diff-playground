@@ -9,4 +9,5 @@ else
 fi
 
 diff <(./gumtree.sh diff $files | grep '^Match' | sort)\
-     <(./diff.py $files | sort)
+     <(./diff.py $files | sort) ||\
+     echo "*** failure for $files"
