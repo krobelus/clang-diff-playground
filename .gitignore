@@ -1,4 +1,5 @@
 *.tree
+*.btree
 *.json
 *.jar
 __pycache__

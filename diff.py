@@ -5,8 +5,10 @@ from heapq import heappush, heappop
 from tempfile import NamedTemporaryFile
 from subprocess import Popen, PIPE
 import os
-from os.path import abspath, dirname
+from os.path import abspath, dirname, realpath
 import sys
+
+import zsmatch
 
 DEBUG = 0
 
@@ -26,6 +28,14 @@ def debug(*s):
 # height
 # parent
 # id
+
+def fake_tree():
+    return {
+        'id': -1,
+        'typeLabel': '',
+        'children': [],
+        'parent': None,
+    }
 
 def read_tree(filename):
     """
@@ -50,10 +60,13 @@ def add_mapping(M, tsrc, tdst):
     dst = tdst['id']
     if mapping_allowed(tsrc, tdst, M):
         debug('add mapping from %d to %d' % (src, dst))
-        left = (LEFT, src)
-        right = (RIGHT, dst)
-        M[left] = right
-        M[right] = left
+        do_add_mapping(M, src, dst)
+
+def do_add_mapping(M, src, dst):
+    left = (LEFT, src)
+    right = (RIGHT, dst)
+    M[left] = right
+    M[right] = left
 
 def mhasleft(M, id1):
     """Return true if there is some mapping (id1, _)."""
@@ -68,9 +81,9 @@ def mleft(M, id1):
     left = (LEFT, id1)
     return M[left][1] if left in M else None
 
-def mright(M, dst):
+def mright(M, id2):
     """Return id1 if there is a mapping (id1, id2)."""
-    right = (RIGHT, dst)
+    right = (RIGHT, id2)
     return M[right][1] if right in M else None
 
 def mlefts(M):
@@ -88,10 +101,10 @@ def lhasleft(A, id1):
             return right
     return None
 
-def lhasright(A, dst):
+def lhasright(A, id2):
     """Return true if there is some mapping (_, id2) in the list."""
     for (left, right) in A:
-        if right == dst:
+        if right == id2:
             return left
     return None
 
@@ -145,12 +158,6 @@ def sn(t):
 def print_node(t):
     print(sn(t))
 
-def print_preorder(t):
-    [print_node(n) for n in preorder(t)]
-
-def print_postorder(t):
-    [print_node(n) for n in postorder(t)]
-
 def pretty_print(t, *, file=None):
     indent = indentf(t['height'])
     for n in preorder(t):
@@ -184,6 +191,13 @@ def postorder(t):
     for c in t['children']:
         yield from postorder(c)
     yield t
+
+def bfs(t):
+    fringe = [t]
+    while len(fringe) > 0:
+        node = fringe.pop(0)
+        yield node
+        fringe += node['children']
 
 class GTpriorityList(list):
     """Height-indexed priority list, ordered by decreasing height."""
@@ -250,7 +264,6 @@ def GTalgorithm1(T1, T2, minHeight):
                         A += [(t1['id'], t2['id'])]
                     else:
                         for (ta, tb) in isomorphic_subtrees(t1, t2):
-                            # print(ta['id'], tb['id'])
                             add_mapping(M, ta, tb)
             for t1 in H1:
                 if not mhasleft(M, t1['id']) and not lhasleft(A, t1['id']):
@@ -314,10 +327,6 @@ def APTEDmapping(t1, t2):
     f2.write(tree2bracketencoding(t2))
     f1.flush()
     f2.flush()
-    open('1.tmp', 'w').write(tree2bracketencoding(t1))
-    open('2.tmp', 'w').write(tree2bracketencoding(t2))
-    # if DEBUG:
-    #     input()
     p = Popen(['./apted.sh', '-m', '-f', f1.name, f2.name], stdout=PIPE)
     # p = Popen(['java', '-jar', 'RTED_v1.2.jar', '-l', '-m', '-f', f1.name, f2.name], stdout=PIPE)
     edit_distance = float(p.stdout.readline().strip())
@@ -353,15 +362,20 @@ def add_optimal_mappings(T1, T2, M, maxSize):
     T1postorder = list(postorder(T1))
     T2postorder = list(postorder(T2))
     if max(len(GTs(T1)), len(GTs(T2))) < maxSize:
-        R = APTEDmapping(T1, T2)
+        R = zsmatch.ZsMatcher(T1, T2).match()
         for (ida, idb) in R:
-            # APTED encodes nodes in post-order numbering starting
-            # from 1
-            ida -= 1
-            idb -= 1
             ta = T1postorder[ida]
             tb = T2postorder[idb]
             add_mapping(M, ta, tb)
+        # R = APTEDmapping(T1, T2)
+        # for (ida, idb) in R:
+        #     # APTED encodes nodes in post-order numbering starting
+        #     # from 1
+        #     ida -= 1
+        #     idb -= 1
+        #     ta = T1postorder[ida]
+        #     tb = T2postorder[idb]
+        #     add_mapping(M, ta, tb)
 
 def GTalgorithm2(T1, T2, M, minDice, maxSize):
     """Bottom-up algorithm to complete the mappings."""
@@ -386,27 +400,71 @@ def indentf(maxheight):
         return " " * (maxheight - t['height'])
     return indent
 
+
 def generate_edit_script(T1, T2, M):
     T1postorder = list(postorder(T1))
     T2postorder = list(postorder(T2))
-    maxheight = T1['height']
-    indent = indentf(maxheight)
-    # matchcount = len(M) / 2
-    # print('matchcount: %d' % matchcount)
-    for t1 in preorder(T1):
-        if mhasleft(M, t1['id']):
-            id2 = mleft(M, t1['id'])
-            t2 = T2postorder[id2]
-            matchs = '%s(%d) %s:%s' % (indent(t2), t2['id'],
-                                       t2['typeLabel'], t2.get('label', ''))
-        else:
-            matchs = 'NO MATCH'
-        assert maxheight <= 10
-        print('{:<40}{:<40}'.format(
-              ('%s(%d) %s:%s' % (indent(t1), t1['id'],
-                                 t1['typeLabel'], t1.get('label', ''))),
-              matchs
-              ))
+    actions = []
+    # next_id = len(T1postorder)
+    # T1FakeRoot = fake_tree()
+    # T1FakeRoot['id'] = -1
+    # T1FakeRoot['children'] += [T1]
+    # T1['parent'] = T1FakeRoot
+    # T2FakeRoot = fake_tree()
+    # T2FakeRoot['id'] = -2
+    # T2FakeRoot['children'] += [T2]
+    # T2['parent'] = T2FakeRoot
+    # add_mapping(M, T1FakeRoot, T2FakeRoot)
+    # tmp = {}
+    # for t in T1postorder:
+    #     tmp[t['id']] = t['id']
+    for t2 in bfs(T2):
+        if mhasright(M, t2['id']):
+            t1 = T1postorder[mright(M, t2['id'])]
+            if not t1.get('label') == t2.get('label'):
+                actions += [('Update', t1, t2)]
+    for t1 in postorder(T1):
+        if not mhasleft(M, t1['id']):
+            actions += [('Delete', t1, None)]
+    # for t1 in bfs(T2):
+    #     id2 = mleft(M, t1['id'])
+    #     if id2 is not None:
+    #         t2 = T2postorder[id2]
+    #         if t1['id'] != t2['id']:
+    #             if t1['parent'] is t2['parent']:
+    #                 print('possibly tilted node', sn(t1), sn(t2))
+    #             else:
+    #                 pass
+
+    # for x in preorder(T2):
+    # for x in bfs(T2):
+    #     w = None
+    #     y = x['parent']
+    #     z = None
+    #     if y is not None:
+    #         if mhasright(M, y['id']):
+    #             zid = mright(M, y['id'])
+    #             z = T1postorder[zid]
+    #     if not mhasright(M, x['id']):
+    #         # k = findPos(x)
+    #         k = 0
+    #         w = fake_tree()
+    #         w['id'] = next_id
+    #         # w['typeLabel'] = x['typeLabel']
+    #         # if 'label' in x:
+    #         #     w['label'] = x['label']
+    #         next_id += 1
+    #         T1postorder += [w]
+
+    #         o = T1postorder[tmp[z['id']]]
+    #         # actions += [('Insert', x, o, k)]
+
+    #         tmp[w['id']] = x['id']
+    #         do_add_mapping(M, w['id'], x['id'])
+    #         z['children'].insert(k, w)
+    #         w['parent'] = z
+    return actions
+
 # updateValue(t, v) - set the value of t to v
 # add(t, tp, i, l, v) - add t as ith child of tp with label l and value v
 # delete(t) - removes the leaf node t
@@ -430,6 +488,8 @@ def generate_gumtree_diff_output(f1, f2):
     # write the trees to disk
     pretty_print(T1, file=open(f1 + '.tree', 'w'))
     pretty_print(T2, file=open(f2 + '.tree', 'w'))
+    # open(f1 + '.btree', 'w').write(tree2bracketencoding(T1))
+    # open(f2 + '.btree', 'w').write(tree2bracketencoding(T2))
 
     M = GTalgorithm(T1, T2, minHeight, minDice, maxSize)
     T1postorder = list(postorder(T1))
@@ -440,11 +500,21 @@ def generate_gumtree_diff_output(f1, f2):
         t1 = T1postorder[id1]
         t2 = T2postorder[id2]
         output += 'Match %s to %s\n' % (sn(t1), sn(t2))
+    for a in generate_edit_script(T1, T2, M):
+        (act, src) = a[0:2]
+        if act == 'Update':
+            dst = a[2]
+            output += 'Update %s to %s\n' % (sn(src), dst['label'])
+        elif act == 'Delete':
+            output += 'Delete %s\n' % sn(src)
+        elif act == 'Insert':
+            dst, pos = a[2:4]
+            output += 'Insert %s into %s at %d\n' % (sn(src), sn(dst), pos)
     return output
 
 if __name__ == '__main__':
     f1 = abspath(sys.argv[1])
     f2 = abspath(sys.argv[2])
-    os.chdir(dirname(sys.argv[0]))
+    os.chdir(dirname(realpath(__file__)))
 
     print(generate_gumtree_diff_output(f1, f2), end='')
