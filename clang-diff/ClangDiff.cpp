@@ -1,6 +1,7 @@
 #include "ClangDiff.h"
 
 #include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/Tooling/CommonOptionsParser.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/MemoryBuffer.h"
 
@@ -345,137 +346,19 @@ public:
   }
 };
 
-// TODO most of this (ArgumentsAdjustingCompilations and OptionsParser) is
-// copied from CommonOptionsParser, this should be factored out (actually we
-// just need to accept exactly two filenames as opposed to a list, I think
-// this requires some change in CommonOptionsParser)
-namespace {
-class ArgumentsAdjustingCompilations : public CompilationDatabase {
-public:
-  ArgumentsAdjustingCompilations(
-      std::unique_ptr<CompilationDatabase> Compilations)
-      : Compilations(std::move(Compilations)) {}
-
-  void appendArgumentsAdjuster(ArgumentsAdjuster Adjuster) {
-    Adjusters.push_back(std::move(Adjuster));
-  }
-
-  std::vector<CompileCommand>
-  getCompileCommands(StringRef FilePath) const override {
-    return adjustCommands(Compilations->getCompileCommands(FilePath));
-  }
-
-  std::vector<std::string> getAllFiles() const override {
-    return Compilations->getAllFiles();
-  }
-
-  std::vector<CompileCommand> getAllCompileCommands() const override {
-    return adjustCommands(Compilations->getAllCompileCommands());
-  }
-
-private:
-  std::unique_ptr<CompilationDatabase> Compilations;
-  std::vector<ArgumentsAdjuster> Adjusters;
-
-  std::vector<CompileCommand>
-  adjustCommands(std::vector<CompileCommand> Commands) const {
-    for (CompileCommand &Command : Commands) {
-      for (const auto &Adjuster : Adjusters) {
-        Command.CommandLine = Adjuster(Command.CommandLine, Command.Filename);
-      }
-    }
-    return Commands;
-  }
-};
-} // namespace
-
-class OptionsParser {
-private:
-  std::unique_ptr<tooling::CompilationDatabase> Compilations;
-  std::vector<std::string> SourcePathList;
-  std::vector<std::string> ExtraArgsBefore;
-  std::vector<std::string> ExtraArgsAfter;
-
-public:
-  OptionsParser(int argc, const char **argv) {
-    static cl::OptionCategory Category("clang-diff options");
-
-    static cl::opt<bool> Help("h", cl::desc("Alias for -help"), cl::Hidden);
-
-    static cl::opt<std::string> BuildPath("p", cl::desc("Build path"),
-                                          cl::Optional, cl::cat(Category));
-
-    static cl::list<std::string> SourcePaths(cl::Positional,
-                                             cl::desc("<source> <destination>"),
-                                             cl::OneOrMore, cl::cat(Category));
-
-    static cl::list<std::string> ArgsAfter(
-        "extra-arg",
-        cl::desc("Additional argument to append to the compiler command line"),
-        cl::cat(Category));
-
-    static cl::list<std::string> ArgsBefore(
-        "extra-arg-before",
-        cl::desc("Additional argument to prepend to the compiler command line"),
-        cl::cat(Category));
-
-    cl::HideUnrelatedOptions(Category);
-
-    std::string ErrorMessage;
-    Compilations =
-        FixedCompilationDatabase::loadFromCommandLine(argc, argv, ErrorMessage);
-    if (!Compilations && !ErrorMessage.empty()) {
-      llvm::errs() << ErrorMessage;
-    }
-    cl::ParseCommandLineOptions(argc, argv);
-    cl::PrintOptionValues();
-
-    SourcePathList = SourcePaths;
-    if (SourcePathList.size() != 2) {
-      llvm::errs() << "exactly two file arguments required\n";
-      return;
-    }
-    if (!Compilations) {
-      if (!BuildPath.empty()) {
-        Compilations = tooling::CompilationDatabase::autoDetectFromDirectory(
-            BuildPath, ErrorMessage);
-      } else {
-        Compilations = tooling::CompilationDatabase::autoDetectFromSource(
-            SourcePaths[0], ErrorMessage);
-      }
-      if (!Compilations) {
-        llvm::errs() << "Error while trying to load a compilation database:\n"
-                     << ErrorMessage << "Running without flags.\n";
-        Compilations =
-            llvm::make_unique<clang::tooling::FixedCompilationDatabase>(
-                ".", std::vector<std::string>());
-      }
-    }
-    auto AdjustingCompilations =
-        llvm::make_unique<ArgumentsAdjustingCompilations>(
-            std::move(Compilations));
-    AdjustingCompilations->appendArgumentsAdjuster(
-        getInsertArgumentAdjuster(ArgsBefore, ArgumentInsertPosition::BEGIN));
-    AdjustingCompilations->appendArgumentsAdjuster(
-        getInsertArgumentAdjuster(ArgsAfter, ArgumentInsertPosition::END));
-    Compilations = std::move(AdjustingCompilations);
-  }
-
-  /// Returns a reference to the loaded compilations database.
-  tooling::CompilationDatabase &getCompilations() { return *Compilations; }
-
-  /// Returns a list of source file paths to process.
-  const std::vector<std::string> &getSourcePathList() const {
-    return SourcePathList;
-  }
-};
-
 } // namespace diff
 } // namespace clang
 
+static cl::OptionCategory ClangDiffCategory("clang-diff options");
+
 int main(int argc, const char **argv) {
-  clang::diff::OptionsParser Options(argc, argv);
+  CommonOptionsParser Options(argc, argv, ClangDiffCategory);
   ArrayRef<std::string> Files = Options.getSourcePathList();
+
+  if (Files.size() != 2) {
+    llvm::errs() << "exactly two filenames required\n";
+    return 1;
+  }
 
   tooling::ClangTool Tool(Options.getCompilations(), Files);
   clang::diff::ClangDiff ClangDiff(Tool);
