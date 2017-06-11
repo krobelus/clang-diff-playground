@@ -1,3 +1,17 @@
+//===- ClangDiff.cpp - compare source files by AST nodes ------*- C++ -*- -===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+///
+/// \file
+/// \brief
+///
+//===----------------------------------------------------------------------===//
+
 #include "ClangDiff.h"
 
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -13,23 +27,23 @@ namespace clang {
 namespace diff {
 
 struct NodeCountVisitor : public RecursiveASTVisitor<NodeCountVisitor> {
-  int count = 0;
+  int Count = 0;
   bool TraverseDecl(Decl *D) {
     if (D != nullptr) {
-      count++;
+      Count++;
       RecursiveASTVisitor<NodeCountVisitor>::TraverseDecl(D);
     }
     return true;
   }
   bool TraverseStmt(Stmt *S) {
     if (S != nullptr) {
-      count++;
+      Count++;
       RecursiveASTVisitor<NodeCountVisitor>::TraverseStmt(S);
     }
     return true;
   }
   bool TraverseType(QualType T) {
-    count++;
+    Count++;
     RecursiveASTVisitor<NodeCountVisitor>::TraverseType(T);
     return true;
   }
@@ -38,26 +52,26 @@ struct NodeCountVisitor : public RecursiveASTVisitor<NodeCountVisitor> {
 using NodeMap = std::map<DynTypedNode, NodeId>;
 
 struct PostorderVisitor : public RecursiveASTVisitor<PostorderVisitor> {
-  int id = 0, depth = 0;
-  Tree &Root;
+  int Id = 0, Depth = 0;
+  TreeRoot &Root;
   NodeMap &PostorderIdMap;
-  PostorderVisitor(Tree &Root, NodeMap &PostorderIdMap)
+  PostorderVisitor(TreeRoot &Root, NodeMap &PostorderIdMap)
       : Root(Root), PostorderIdMap(PostorderIdMap) {}
-  void PreTraverse() { depth++; }
+  void PreTraverse() { Depth++; }
   template <typename T> void PostTraverse(T *ASTNode) {
     if (ASTNode == nullptr) {
-    } else {
-      depth--;
-      Node &N = Root.postorder[id];
-      N.parent = NoNodeId;
-      N.leftMostDescendant = id;
-      N.depth = depth;
-      auto DNode = DynTypedNode::create(*ASTNode);
-      N.node = DNode;
-      PostorderIdMap[DNode] = id;
-      Root.maxDepth = std::max(Root.maxDepth, depth);
-      id++;
+      return;
     }
+    Depth--;
+    Node &N = Root.Postorder[Id];
+    N.Parent = NoNodeId;
+    N.LeftMostDescendant = Id;
+    N.Depth = Depth;
+    auto DNode = DynTypedNode::create(*ASTNode);
+    N.ASTNode = DNode;
+    PostorderIdMap[DNode] = Id;
+    Root.MaxDepth = std::max(Root.MaxDepth, Depth);
+    Id++;
   }
   bool TraverseDecl(Decl *D) {
     if (D != nullptr) {
@@ -84,27 +98,27 @@ struct PostorderVisitor : public RecursiveASTVisitor<PostorderVisitor> {
 };
 
 struct PreorderVisitor : public RecursiveASTVisitor<PreorderVisitor> {
-  NodeId parent = -1;
-  Tree &Root;
+  NodeId Parent = -1;
+  TreeRoot &Root;
   const NodeMap &PostorderIdMap;
-  PreorderVisitor(Tree &Root, const NodeMap &PostorderIdMap)
+  PreorderVisitor(TreeRoot &Root, const NodeMap &PostorderIdMap)
       : Root(Root), PostorderIdMap(PostorderIdMap) {}
   template <class T> NodeId PreTraverse(T *ASTNode) {
     if (ASTNode == nullptr) {
-      return parent;
+      return Parent;
     }
     auto DNode = DynTypedNode::create(*ASTNode);
     const NodeId &Id = PostorderIdMap.at(DNode);
-    Root.postorder[Id].parent = parent;
-    if (parent != NoNodeId) {
-      Node &P = Root.postorder[parent];
-      P.leftMostDescendant = std::min(P.leftMostDescendant, Id);
-      P.children.push_back(Id);
+    Root.Postorder[Id].Parent = Parent;
+    if (Parent != NoNodeId) {
+      Node &P = Root.Postorder[Parent];
+      P.LeftMostDescendant = std::min(P.LeftMostDescendant, Id);
+      P.Children.push_back(Id);
     }
-    parent = Id;
-    return Root.postorder[Id].parent;
+    Parent = Id;
+    return Root.Postorder[Id].Parent;
   }
-  void PostTraverse(NodeId PreviousParent) { parent = PreviousParent; }
+  void PostTraverse(NodeId PreviousParent) { Parent = PreviousParent; }
   bool TraverseDecl(Decl *D) {
     if (D != nullptr) {
       auto SavedState = PreTraverse(D);
@@ -129,13 +143,13 @@ struct PreorderVisitor : public RecursiveASTVisitor<PreorderVisitor> {
   }
 };
 
-static void Preprocess(Tree &Root) {
+static void Preprocess(TreeRoot &Root) {
   auto *TUD = Root.ASTUnit->getASTContext().getTranslationUnitDecl();
   NodeCountVisitor NodeCounter;
   NodeCounter.TraverseDecl(TUD);
-  Root.nodeCount = NodeCounter.count;
-  Root.postorder = std::vector<Node>(Root.nodeCount);
-  NodeMap PostorderIdMap{};
+  Root.NodeCount = NodeCounter.Count;
+  Root.Postorder = std::vector<Node>(Root.NodeCount);
+  NodeMap PostorderIdMap;
   PostorderVisitor PostorderWalker(Root, PostorderIdMap);
   PostorderWalker.TraverseDecl(TUD);
   PreorderVisitor PreorderWalker(Root, PostorderIdMap);
@@ -144,90 +158,90 @@ static void Preprocess(Tree &Root) {
 
 class ClangDiff {
 private:
-  tooling::ClangTool &Tool;
-  Tree T1;
-  Tree T2;
+  ClangTool &Tool;
+  TreeRoot T1;
+  TreeRoot T2;
 
   bool isomorphic(NodeId Id1, NodeId Id2) const {
-    const Node &N1 = T1.postorder[Id1];
-    const Node &N2 = T2.postorder[Id2];
+    const Node &N1 = T1.Postorder[Id1];
+    const Node &N2 = T2.Postorder[Id2];
     // TODO compare T1.label(Id1)
-    if (!N1.hasSameType(N2) || N1.children.size() != N2.children.size()) {
+    if (!N1.hasSameType(N2) || N1.Children.size() != N2.Children.size()) {
       return false;
     }
-    for (size_t I = 0; I < N1.children.size(); I++) {
-      if (!isomorphic(N1.children[I], N2.children[I])) {
+    for (size_t Id = 0; Id < N1.Children.size(); Id++) {
+      if (!isomorphic(N1.Children[Id], N2.Children[Id])) {
         return false;
       }
     }
     return true;
   }
 
-  bool MappingAllowed(const Mappings &M, NodeId Id1, NodeId Id2) const {
-    const Node &N1 = T1.postorder[Id1];
-    const Node &N2 = T2.postorder[Id2];
+  bool isMappingAllowed(const Mappings &M, NodeId Id1, NodeId Id2) const {
+    const Node &N1 = T1.Postorder[Id1];
+    const Node &N2 = T2.Postorder[Id2];
     bool AnyMapped = M.hasSrc(Id1) || M.hasDst(Id2);
     bool SameType = N1.hasSameType(N2);
-    NodeId P1 = N1.parent;
-    NodeId P2 = N2.parent;
+    NodeId P1 = N1.Parent;
+    NodeId P2 = N2.Parent;
     bool ParentsSameType =
         P1 == P2 || (P1 != NoNodeId && P2 != NoNodeId &&
-                     T1.postorder[P1].hasSameType(T2.postorder[P2]));
+                     T1.Postorder[P1].hasSameType(T2.Postorder[P2]));
     return not AnyMapped && SameType && ParentsSameType;
   }
 
-  void AddIsomorphicSubtrees(Mappings &M, NodeId Id1, NodeId Id2) const {
+  void addIsomorphicSubTrees(Mappings &M, NodeId Id1, NodeId Id2) const {
     M.link(Id1, Id2);
-    const Node &N1 = T1.postorder[Id1];
-    const Node &N2 = T2.postorder[Id2];
+    const Node &N1 = T1.Postorder[Id1];
+    const Node &N2 = T2.Postorder[Id2];
     assert(isomorphic(Id1, Id2));
-    assert(N1.children.size() == N2.children.size());
-    for (size_t I = 0; I < N1.children.size(); I++) {
-      AddIsomorphicSubtrees(M, N1.children[I], N2.children[I]);
+    assert(N1.Children.size() == N2.Children.size());
+    for (size_t Id = 0; Id < N1.Children.size(); Id++) {
+      addIsomorphicSubTrees(M, N1.Children[Id], N2.Children[Id]);
     }
   }
 
-  void AddOptimalMappings(Mappings &M, NodeId Id1, NodeId Id2) const {
-    if (std::max(T1.NumberOfDescendants(Id1), T2.NumberOfDescendants(Id2)) <
+  void addOptimalMappings(Mappings &M, NodeId Id1, NodeId Id2) const {
+    if (std::max(T1.numberOfDescendants(Id1), T2.numberOfDescendants(Id2)) <
         MaxSize) {
-      ZsMatcher Matcher;
-      std::vector<std::pair<NodeId, NodeId>> R = Matcher.match(T1, T2);
+      ZsMatcher Matcher(T1, T2);
+      std::vector<std::pair<NodeId, NodeId>> R = Matcher.match();
       for (const auto Tuple : R) {
         NodeId Id1 = Tuple.first;
         NodeId Id2 = Tuple.second;
-        if (MappingAllowed(M, Id1, Id2)) {
+        if (isMappingAllowed(M, Id1, Id2)) {
           M.link(Id1, Id2);
         }
       }
     }
   }
 
-  double Dice(const Mappings &M, NodeId Id1, NodeId Id2) const {
+  double dice(const Mappings &M, NodeId Id1, NodeId Id2) const {
     if (Id1 == NoNodeId || Id2 == NoNodeId) {
       return 0.0;
     }
     int CommonDescendants = 0;
-    const Node &N1 = T1.postorder[Id1];
-    for (NodeId Id = N1.leftMostDescendant; Id < Id1; Id++) {
+    const Node &N1 = T1.Postorder[Id1];
+    for (NodeId Id = N1.LeftMostDescendant; Id < Id1; Id++) {
       CommonDescendants += static_cast<int>(M.hasSrc(Id));
     }
     return 2.0 * CommonDescendants /
-           (T1.NumberOfDescendants(Id1) + T2.NumberOfDescendants(Id2));
+           (T1.numberOfDescendants(Id1) + T2.numberOfDescendants(Id2));
   }
 
-  NodeId FindCandidate(const Mappings &M, NodeId Id1) const {
+  NodeId findCandidate(const Mappings &M, NodeId Id1) const {
     NodeId Candidate = NoNodeId;
     double BestDiceValue = 0.0;
-    const Node &N1 = T1.postorder[Id1];
-    for (NodeId Id2 = 0; Id2 < T2.nodeCount; Id2++) {
-      const Node &N2 = T2.postorder[Id2];
+    const Node &N1 = T1.Postorder[Id1];
+    for (NodeId Id2 = 0; Id2 < T2.NodeCount; Id2++) {
+      const Node &N2 = T2.Postorder[Id2];
       if (!N1.hasSameType(N2)) {
         continue;
       }
       if (M.hasDst(Id2)) {
         continue;
       }
-      double DiceValue = Dice(M, Id1, Id2);
+      double DiceValue = dice(M, Id1, Id2);
       if (DiceValue > BestDiceValue) {
         BestDiceValue = DiceValue;
         Candidate = Id2;
@@ -236,25 +250,25 @@ private:
     return Candidate;
   }
 
-  void BottomUpSubtreeMatching(Mappings &M) const {
+  void matchBottomUp(Mappings &M) const {
     // FIXME
-    return;
-    for (NodeId Id1 = 0; Id1 < T1.nodeCount; Id1++) {
+    for (NodeId Id1 = 0; Id1 < T1.NodeCount; Id1++) {
       if (Id1 == T1.root()) {
         M.link(T1.root(), T2.root());
-        AddOptimalMappings(M, T1.root(), T2.root());
+        addOptimalMappings(M, T1.root(), T2.root());
       } else {
-        const Node &N1 = T1.postorder[Id1];
+        assert(Id1 != NoNodeId);
+        const Node &N1 = T1.Postorder[Id1];
         bool Matched = M.hasSrc(Id1);
         bool MatchedChildren =
-            std::any_of(N1.children.begin(), N1.children.end(),
-                        [=](NodeId Child) { return M.hasSrc(Child); });
+            std::any_of(N1.Children.begin(), N1.Children.end(),
+                        [&](NodeId Child) { return M.hasSrc(Child); });
         if (!Matched && MatchedChildren) {
-          NodeId Id2 = FindCandidate(M, Id1);
-          if (Id2 != NoNodeId && Dice(M, Id1, Id2) > MinDice) {
-            if (MappingAllowed(M, Id1, Id2)) {
+          NodeId Id2 = findCandidate(M, Id1);
+          if (Id2 != NoNodeId && dice(M, Id1, Id2) > MinDice) {
+            if (isMappingAllowed(M, Id1, Id2)) {
               M.link(Id1, Id2);
-              AddOptimalMappings(M, Id1, Id2);
+              addOptimalMappings(M, Id1, Id2);
             }
           }
         }
@@ -262,7 +276,7 @@ private:
     }
   }
 
-  Mappings TopDownSubtreeMatching() const {
+  Mappings matchTopDown() const {
     PriorityList L1(T1);
     PriorityList L2(T2);
 
@@ -289,14 +303,14 @@ private:
         H1 = L1.pop();
         H2 = L2.pop();
         for (NodeId Id1 : H1) {
-          /* Node &N1 = T1.postorder[Id1]; */
+          /* Node &N1 = T1.Postorder[Id1]; */
           for (NodeId Id2 : H2) {
-            /* Node &N2 = T2.postorder[Id2]; */
+            /* Node &N2 = T2.Postorder[Id2]; */
             if (isomorphic(Id1, Id2)) {
               // TODO
               {
-                if (MappingAllowed(M, Id1, Id2)) {
-                  AddIsomorphicSubtrees(M, Id1, Id2);
+                if (isMappingAllowed(M, Id1, Id2)) {
+                  addIsomorphicSubTrees(M, Id1, Id2);
                 }
               }
             }
@@ -318,9 +332,9 @@ private:
     return M;
   }
 
-  void Match() const {
-    Mappings M = TopDownSubtreeMatching();
-    BottomUpSubtreeMatching(M);
+  void match() const {
+    Mappings M = matchTopDown();
+    matchBottomUp(M);
   }
 
 public:
@@ -328,7 +342,7 @@ public:
   double MinDice = 0.2;
   int MaxSize = 100;
 
-  ClangDiff(tooling::ClangTool &Tool) : Tool(Tool) {}
+  ClangDiff(ClangTool &Tool) : Tool(Tool) {}
 
   bool runDiff(const StringRef File1, const StringRef File2) {
     std::vector<std::unique_ptr<ASTUnit>> ASTs;
@@ -341,7 +355,7 @@ public:
     T2.ASTUnit = std::move(ASTs[1]);
     Preprocess(T1);
     Preprocess(T2);
-    Match();
+    match();
     return true;
   }
 };
