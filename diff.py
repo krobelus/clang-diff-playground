@@ -256,11 +256,13 @@ def GTalgorithm1(T1, T2, minHeight):
                 debug('trying to match %s, %s' % (sn(t1), sn(t2)))
                 if isomorphic(t1, t2):
                     debug('isomorphic!')
+                    # TODO this seems impossible..
                     if (any(isomorphic(t1, tx) and tx is not t2
                             for tx in postorder(T2)) or
                         any(isomorphic(tx, t2) and tx is not t1
                             for tx in postorder(T1))
                         ):
+                        assert False
                         A += [(t1['id'], t2['id'])]
                     else:
                         for (ta, tb) in isomorphic_subtrees(t1, t2):
@@ -280,6 +282,7 @@ def GTalgorithm1(T1, T2, minHeight):
         return GTdice(t1['parent'], t2['parent'], M)
     # order descendingly by dice value
     sorted(A, key=dicekey, reverse=True)
+    assert len(A) == 0
     while len(A) > 0:
         (id1, id2) = A.pop(0)
         t1 = T1postorder[id1]

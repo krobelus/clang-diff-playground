@@ -2,7 +2,7 @@ Running
 =======
 
 ```
-  diff.py examples/1{a,b}.java
+  ./diff.py examples/1{a,b}.java
 ```
 
 The scripts needs external tools; use `download-and-compile-tools.sh` to get
