@@ -1,5 +1,13 @@
 import collections
 import numpy as np
+import math
+
+def updateCost(src, dst):
+    if src['typeLabel'] != dst['typeLabel']:
+        return math.inf
+    if not src.get('label') or not dst.get('label'):
+        return 1
+    return 1 - int(src['label'] == dst['label'])
 
 def gettype(t):
     return t['typeLabel']
@@ -44,13 +52,13 @@ class ZsTree:
         visited = np.zeros(self.nodeCount + 1, bool)
         k = self.leafCount
         for i in range(self.nodeCount, 0, -1):
-            if not visited[self.lld(i)]:
+            if not visited[self.llds[i - 1] + 1]:
                 self.keyroots[k] = i
-                visited[self.lld(i)] = True
+                visited[self.llds[i - 1] + 1] = True
                 k -= 1
 
-    def lld(self, i):
-        return self.llds[i - 1] + 1
+    # def lld(self, i):
+    #     return self.llds[i - 1] + 1
 
     def tree(self, i):
         return self.labels[i - 1]
@@ -72,19 +80,19 @@ class ZsMatcher:
         return self.treeDist
 
     def computeForestDist(self, i, j):
-        self.forestDist[self.src.lld(i) - 1][self.dst.lld(j) - 1] = 0
-        for di in range(self.src.lld(i), i + 1):
-            # costDel = self.getDeletionCost(self.src.tree(di))
+        assert i and j
+        self.forestDist[self.src.llds[i - 1]][self.dst.llds[j - 1]] = 0
+        for di in range(self.src.llds[i - 1] + 1, i + 1):
             costDel = 1
-            self.forestDist[di][self.dst.lld(j) - 1] = (
-                self.forestDist[di - 1][self.dst.lld(j) - 1] + costDel)
-            for dj in range(self.dst.lld(j), j + 1):
+            self.forestDist[di][self.dst.llds[j - 1]] = (
+                self.forestDist[di - 1][self.dst.llds[j - 1]] + costDel)
+            for dj in range(self.dst.llds[j - 1] + 1, j + 1):
                 costIns = 1
-                self.forestDist[self.src.lld(i) - 1][dj] = (
-                    self.forestDist[self.src.lld(i) - 1][dj - 1] + costIns)
-                if (self.src.lld(di) == self.src.lld(i)
-                    and self.dst.lld(dj) == self.dst.lld(j)):
-                    costUpd = int(label(self.src.tree(di)) != label(self.dst.tree(dj)))
+                self.forestDist[self.src.llds[i - 1]][dj] = (
+                    self.forestDist[self.src.llds[i - 1]][dj - 1] + costIns)
+                if (self.src.llds[di - 1] == self.src.llds[i - 1]
+                    and self.dst.llds[dj - 1] == self.dst.llds[j - 1]):
+                    costUpd = updateCost(self.src.tree(di), self.dst.tree(dj))
                     self.forestDist[di][dj] = min(
                         self.forestDist[di - 1][dj] + costDel,
                         self.forestDist[di][dj - 1] + costIns,
@@ -94,7 +102,7 @@ class ZsMatcher:
                     self.forestDist[di][dj] = min(
                         self.forestDist[di - 1][dj] + costDel,
                         self.forestDist[di][dj - 1] + costIns,
-                        self.forestDist[self.src.lld(di) - 1][self.dst.lld(dj) - 1]
+                        self.forestDist[self.src.llds[di - 1]][self.dst.llds[dj - 1]]
                         + self.treeDist[di][dj])
 
     def match(self):
@@ -109,11 +117,12 @@ class ZsMatcher:
             (lastRow, lastCol) = treePairs.pop()
 
             if not rootNodePair:
-                self.forestDist(lastRow, lastCol)
-                rootNodePair = False
+                self.computeForestDist(lastRow, lastCol)
 
-            firstRow = self.src.lld(lastRow) - 1
-            firstCol = self.dst.lld(lastCol) - 1
+            rootNodePair = False
+
+            firstRow = self.src.llds[lastRow - 1]
+            firstCol = self.dst.llds[lastCol - 1]
 
             row = lastRow
             col = lastCol
@@ -126,17 +135,17 @@ class ZsMatcher:
                       self.forestDist[row][col]):
                     col -= 1
                 else:
-                    if (self.src.lld(row) - 1 == self.src.lld(lastRow) - 1 and
-                        self.dst.lld(col) - 1 == self.dst.lld(lastCol) - 1):
+                    if (self.src.llds[row - 1] == self.src.llds[lastRow - 1]  and
+                        self.dst.llds[col - 1] == self.dst.llds[lastCol - 1]):
                         tSrc = self.src.tree(row)
                         tDst = self.dst.tree(col)
-                        assert gettype(tSrc) == gettype(tDst)
+                        assert tSrc['typeLabel'] == tDst['typeLabel']
                         mappings += [(tSrc['id'] - self.src.start,
                                       tDst['id'] - self.dst.start)]
                         row -= 1
                         col -= 1
                     else:
                         treePairs += [(row, col)]
-                        row = self.src.lld(row) - 1
-                        col = self.dst.lld(col) - 1
+                        row = self.src.llds[row - 1]
+                        col = self.dst.llds[col - 1]
         return mappings
