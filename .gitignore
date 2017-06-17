@@ -2,8 +2,9 @@
 *.btree
 *.json
 *.jar
-__pycache__
 /apted
-/gumtree-*-SNAPSHOT
 /gumtree
-/compile_commands.json
+/gumtree-*-SNAPSHOT
+__pycache__
+compile_commands.json
+/tests/build

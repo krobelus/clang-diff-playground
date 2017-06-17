@@ -1,5 +1,6 @@
 //===- ClangDiff.h   - compare source files by AST nodes ------*- C++ -*- -===//
 //
+//
 //                     The LLVM Compiler Infrastructure
 //
 // This file is distributed under the University of Illinois Open Source
@@ -21,6 +22,7 @@
 #include "llvm/ADT/PriorityQueue.h"
 #include "llvm/Support/FormatVariadic.h"
 
+#include <limits>
 #include <memory>
 #include <unordered_set>
 
@@ -31,7 +33,7 @@ using namespace ast_type_traits;
 namespace clang {
 namespace diff {
 
-// Given a tree, this identifies a node by its postorder offset.
+// Within a tree, this identifies a node by its postorder offset.
 using NodeId = int;
 
 // Sentinel value for invalid nodes.
@@ -40,7 +42,7 @@ const NodeId NoNodeId = -1;
 // Represents a Clang AST node, alongside some additional information.
 struct Node {
   NodeId Parent, LeftMostDescendant;
-  int Depth;
+  int Depth, Height;
   DynTypedNode ASTNode;
   // Maybe there is a better way to store children than this.
   SmallVector<NodeId, 4> Children;
@@ -51,39 +53,72 @@ struct Node {
            (getType().isNone() && Other.getType().isNone());
   }
   const StringRef getTypeLabel() const { return getType().asStringRef(); }
-
-  void dump(NodeId Id = NoNodeId) const {
-    for (int i = 0; i < Depth; ++i) {
-      llvm::errs() << " ";
-    }
-    llvm::errs() << getTypeLabel() << "(" << Id << ")\n";
-  }
+  bool isLeaf() const { return Children.empty(); }
 };
 
-// Wrapper for the Clang AST of a TranslationUnit.
-struct TreeRoot {
-  int NodeCount, LeafCount;
+// Represents the AST of a TranslationUnit.
+class TreeRoot {
+private:
+  std::vector<Node> Postorder;
+
+public:
+  int LeafCount = 0;
   int MaxDepth = 0;
   std::unique_ptr<ASTUnit> ASTUnit;
-  std::vector<Node> Postorder;
-  std::vector<NodeId> KeyRoots;
 
-  NodeId root() const {
-    return Postorder.empty() ? NoNodeId : Postorder.size() - 1;
+  void setSize(size_t Size) { Postorder.resize(Size); }
+  int getSize() const { return Postorder.size(); }
+  NodeId root() const { return getSize() - 1; }
+
+  const Node &getNode(NodeId Id) const { return Postorder[Id]; }
+  Node &getMutableNode(NodeId Id) { return Postorder[Id]; }
+  bool isValidNodeId(NodeId Id) const { return Id >= 0 && Id < getSize(); }
+  void addNode(Node &N) { Postorder.emplace_back(std::move(N)); }
+
+  // Returns the number of leaves in the subtree.
+  int getSubtreePostorder(std::vector<NodeId> &Subtree, NodeId Root) const {
+    int Leaves = 0;
+    std::function<void(NodeId)> Traverse = [&](NodeId Id) {
+      const Node &N = getNode(Id);
+      for (NodeId Child : N.Children) {
+        Traverse(Child);
+      }
+      if (N.isLeaf()) {
+        ++Leaves;
+      }
+      Subtree.push_back(Id);
+    };
+    Traverse(Root);
+    return Leaves;
   }
+  std::vector<NodeId> getSubtreeBfs(NodeId Id) const {
+    std::vector<NodeId> Subtree;
+    size_t Expanded = 0;
+    Subtree.push_back(Id);
+    while (Expanded < Subtree.size()) {
+      for (NodeId Child : getNode(Subtree[Expanded++]).Children) {
+        Subtree.push_back(Child);
+      }
+    }
+    return Subtree;
+  }
+
   int numberOfDescendants(NodeId Id) const {
-    return Id - Postorder[Id].LeftMostDescendant;
+    return Id - getNode(Id).LeftMostDescendant;
   }
   std::string label(NodeId Id) const {
-    const Node &N = Postorder[Id];
+    assert(isValidNodeId(Id));
+    const Node &N = getNode(Id);
     const DynTypedNode &DTN = N.ASTNode;
-    if (0) {
+    if (false) {
+    } else if (auto *X = DTN.get<FieldDecl>()) {
+      return X->getName();
     } else if (auto *X = DTN.get<BinaryOperator>()) {
       return X->getOpcodeStr();
     } else if (auto *X = DTN.get<IntegerLiteral>()) {
-      auto tmp = X->getValue();
+      auto Tmp = X->getValue();
       SmallString<256> Str;
-      tmp.toString(Str, /*Radix=*/10, /*Signed=*/false);
+      Tmp.toString(Str, /*Radix=*/10, /*Signed=*/false);
       return Str.str();
     } else if (auto *X = DTN.get<CompoundStmt>()) {
       return "";
@@ -92,83 +127,79 @@ struct TreeRoot {
     } else if (auto *X = DTN.get<DeclRefExpr>()) {
       return "";
     } else if (auto *D = DTN.get<Decl>()) {
-      /* llvm::errs() << "got Decl\n"; */
     } else if (auto *S = DTN.get<Stmt>()) {
-      /* llvm::errs() << "got Stmt\n"; */
     } else if (auto *T = DTN.get<QualType>()) {
-      /* llvm::errs() << "got QualType\n"; */
-    } else {
-      llvm::errs() << "fixme: " << N.getTypeLabel() << "\n";
     }
-    return "";
+    llvm_unreachable("Fatal: unhandled AST node\n");
   }
-  std::string getSubtreeString(NodeId Id) const {
-    std::string StringRepresentation;
-    raw_string_ostream OS(StringRepresentation);
-    PrintingPolicy PP(/*LangOpts=*/ASTUnit->getLangOpts());
-    const Node &N = Postorder[Id];
-    N.ASTNode.print(OS, PP);
-    return OS.str();
-  }
-  void dump(NodeId Id = NoNodeId) const {
+  void dumpTree(NodeId Id = NoNodeId) const {
     if (Id == NoNodeId) {
       Id = root();
     }
-    const Node &N = Postorder[Id];
-    N.dump(Id);
+    const Node &N = getNode(Id);
+    for (int I = 0; I < N.Depth; ++I) {
+      outs() << " ";
+    }
+    outs() << showNode(Id) << "\n";
     for (NodeId Child : N.Children) {
-      dump(Child);
+      dumpTree(Child);
     }
   }
   std::string showNode(NodeId Id) const {
     if (Id == NoNodeId) {
       return "None";
     }
-    return formatv("{0}({1}):{2}", Postorder[Id].getTypeLabel(), Id,
-        label(Id));
-  }
-  void computeKeyRoots() {
-    KeyRoots.resize(LeafCount);
-    std::unordered_set<NodeId> Visited;
-    NodeId K = LeafCount - 1;
-    for (NodeId Id = root(); Id >= 0; --Id) {
-      NodeId LeftDesc = Postorder[Id].LeftMostDescendant;
-      if (Visited.count(LeftDesc)) {
-        continue;
-      }
-      KeyRoots[K] = Id;
-      Visited.insert(LeftDesc);
-      --K;
+    std::string Label;
+    if (label(Id) != "") {
+      Label = formatv(": {0}", label(Id));
     }
+    return formatv("{0}{1}({2})", getNode(Id).getTypeLabel(), Label, Id);
+  }
+  void dumpNodeAsJson(NodeId Id) const {
+    auto N = getNode(Id);
+    std::string Label;
+    if (label(Id) != "") {
+      Label = formatv(R"(,"label":"{0}")", label(Id));
+    }
+    outs() << formatv(R"({"typeLabel":"{0}"{1},"children":[)", N.getTypeLabel(),
+                      Label);
+    if (N.Children.size() > 0) {
+      dumpNodeAsJson(N.Children[0]);
+      for (size_t I = 1; I < N.Children.size(); ++I) {
+        outs() << ",";
+        dumpNodeAsJson(N.Children[I]);
+      }
+    }
+    outs() << "]}";
+  }
+  void dumpAsJson() const {
+    outs() << R"({"root":)";
+    dumpNodeAsJson(root());
+    outs() << "}";
   }
 };
 
 namespace {
 // Compares nodes by their depth.
-struct CompareDepth {
+struct HeightLess {
   const TreeRoot &Tree;
-  CompareDepth(const TreeRoot &Tree) : Tree(Tree) {}
-  bool operator()(NodeId id1, NodeId id2) const {
-    return Tree.Postorder[id1].Depth > Tree.Postorder[id2].Depth;
+  HeightLess(const TreeRoot &Tree) : Tree(Tree) {}
+  bool operator()(NodeId Id1, NodeId Id2) const {
+    return Tree.getNode(Id1).Height < Tree.getNode(Id2).Height;
   }
 };
 } // namespace
 
-// Priority queue for nodes, sorted by their depth.
+// Priority queue for nodes, sorted descendingly by their height.
 class PriorityList {
   const TreeRoot &Tree;
-  CompareDepth Comparator;
+  HeightLess Comparator;
   std::vector<NodeId> Container;
-  PriorityQueue<NodeId, std::vector<NodeId>, CompareDepth> List;
+  PriorityQueue<NodeId, std::vector<NodeId>, HeightLess> List;
 
 public:
   PriorityList(const TreeRoot &Tree)
-      : Tree(Tree), Comparator(Tree), List(Comparator, Container) {
-    Container.reserve(Tree.Postorder.size());
-    for (NodeId Id = 0; Id < Tree.NodeCount; ++Id) {
-      push(Id);
-    }
-  }
+      : Tree(Tree), Comparator(Tree), List(Comparator, Container) {}
 
   void push(NodeId id) { List.push(id); }
 
@@ -181,6 +212,8 @@ public:
         List.pop();
       }
     }
+    // TODO this is here to get a stable output, not a good heuristic
+    std::sort(Result.begin(), Result.end());
     return Result;
   }
 
@@ -188,47 +221,31 @@ public:
     if (List.empty()) {
       return 0;
     }
-    return 1 + Tree.MaxDepth - Tree.Postorder[List.top()].Depth;
+    return Tree.getNode(List.top()).Height;
   }
 
-  void open(NodeId id) {
-    for (NodeId Child : Tree.Postorder[id].Children) {
+  void open(NodeId Id) {
+    for (NodeId Child : Tree.getNode(Id).Children) {
       push(Child);
     }
   }
 };
 
-#if 0
-class MappingList : std::vector<std::pair<NodeId, NodeId>> {
-  std::unordered_set<NodeId> mappedSources;
-  std::unordered_set<NodeId> mappedDestinations;
-
-public:
-  void add(NodeId src, NodeId dst) {
-    assert(!mappedSources.count(src) && !mappedDestinations.count(dst));
-    emplace_back(src, dst);
-  }
-  bool hasSrc(NodeId src) const { return mappedSources.count(src) != 0u; }
-  bool hasDst(NodeId dst) const { return mappedDestinations.count(dst) != 0u; }
-};
-#endif
-
 // Maps nodes of the left tree to ones on the right, and vice versa.
-// Supports fast insertion and lookup but not traversal.
-// maybe it is better to just use std::map
+// Supports fast insertion and lookup.
+// TODO allow multiple mappings
 class Mappings {
   NodeId *src2dst, *dst2src;
   const TreeRoot &T1, &T2;
-  size_t size;
 
 public:
   Mappings(const TreeRoot &T1, const TreeRoot &T2) : T1(T1), T2(T2) {
-    size = T1.NodeCount + T2.NodeCount;
-    src2dst = new NodeId[size];
-    dst2src = new NodeId[size];
-    // set everything to -1
-    memset(src2dst, NoNodeId, size * sizeof(*src2dst));
-    memset(dst2src, NoNodeId, size * sizeof(*dst2src));
+    int Size = T1.getSize() + T2.getSize();
+    src2dst = new NodeId[Size];
+    dst2src = new NodeId[Size];
+    // set everything to NoNodeId == -1
+    memset(src2dst, NoNodeId, Size * sizeof(*src2dst));
+    memset(dst2src, NoNodeId, Size * sizeof(*dst2src));
   }
   ~Mappings() {
     delete[] src2dst;
@@ -243,15 +260,72 @@ public:
   bool hasSrc(NodeId src) const { return src2dst[src] != NoNodeId; }
   bool hasDst(NodeId dst) const { return dst2src[dst] != NoNodeId; }
 
-  void dump() const {
-    for (NodeId Id1 = 0, Id2; Id1 < T1.NodeCount; ++Id1) {
+  void dumpMapping() const {
+    for (NodeId Id1 = 0, Id2; Id1 < T1.getSize(); ++Id1) {
       if ((Id2 = getDst(Id1)) != NoNodeId) {
-        llvm::errs() << "Match " << T1.Postorder[Id1].getTypeLabel() << " ("
-                     << Id1 << ")"
-                     << " to " << T2.Postorder[Id2].getTypeLabel() << " ("
-                     << Id2 << ")"
-                     << "\n";
+        outs() << formatv("Match {0} to {1}\n", T1.showNode(Id1),
+                          T2.showNode(Id2));
       }
+    }
+  }
+};
+
+class Subtree {
+  using SNodeId = int;
+  const TreeRoot &Tree;
+  std::vector<NodeId> OriginalIds;
+  std::vector<SNodeId> LeftMostDescendants;
+  int LeafCount;
+
+public:
+  std::vector<NodeId> KeyRoots;
+
+  Subtree(const TreeRoot &Tree, NodeId RootId) : Tree(Tree) {
+    LeafCount = Tree.getSubtreePostorder(OriginalIds, RootId);
+    computeLeftMostDescendants();
+    computeKeyRoots();
+  }
+
+  int getSizeS() const { return OriginalIds.size(); }
+  NodeId getOriginalId(SNodeId Id) const {
+    assert(Id > 0 && Id <= getSizeS());
+    return OriginalIds[Id - 1];
+  }
+  const Node &getNodeS(SNodeId Id) const {
+    return Tree.getNode(getOriginalId(Id));
+  }
+  const std::string labelS(SNodeId Id) const {
+    return Tree.label(getOriginalId(Id));
+  }
+  SNodeId getLeftMostDescendant(SNodeId Id) const {
+    assert(Id >= 0 && Id < getSizeS());
+    return LeftMostDescendants[Id];
+  }
+
+private:
+  void computeLeftMostDescendants() {
+    LeftMostDescendants.resize(getSizeS());
+    for (SNodeId I = 0; I < getSizeS(); ++I) {
+      NodeId Cur = getOriginalId(I + 1);
+      while (!Tree.getNode(Cur).isLeaf()) {
+        Cur = Tree.getNode(Cur).Children[0];
+      }
+      LeftMostDescendants[I] = (Cur - getOriginalId(1));
+    }
+  }
+  void computeKeyRoots() {
+    KeyRoots.resize(LeafCount);
+    std::unordered_set<SNodeId> Visited;
+    int K = LeafCount - 1;
+    for (int I = getSizeS(); I > 0; --I) {
+      SNodeId LeftDesc = getLeftMostDescendant(I - 1);
+      if (Visited.count(LeftDesc) != 0u) {
+        continue;
+      }
+      assert(K >= 0);
+      KeyRoots[K] = I;
+      Visited.insert(LeftDesc);
+      --K;
     }
   }
 };
@@ -259,80 +333,89 @@ public:
 // Computes an optimal mapping between two trees
 class ZsMatcher {
   using Pairs = std::vector<std::pair<NodeId, NodeId>>;
+  using Score = double;
 
 private:
-  const TreeRoot &T1;
-  const TreeRoot &T2;
-  double **TreeDist;
-  double **ForestDist;
+  Subtree S1;
+  Subtree S2;
+  Score **TreeDist;
+  Score **ForestDist;
+
+  // TODO Use string editing distance if applicable.
+  Score getUpdateCost(NodeId Id1, NodeId Id2) {
+    if (!S1.getNodeS(Id1).hasSameType(S2.getNodeS(Id2))) {
+      return std::numeric_limits<Score>::max();
+    }
+    if (S1.labelS(Id1) == S2.labelS(Id2)) {
+      return 0;
+    }
+    return 1;
+  }
 
   void computeTreeDist() {
-    for (NodeId Id1 : T1.KeyRoots) {
-      for (NodeId Id2 : T2.KeyRoots) {
-        computeForestDist(Id1 + 1, Id2 + 1);
+    for (NodeId Id1 : S1.KeyRoots) {
+      for (NodeId Id2 : S2.KeyRoots) {
+        computeForestDist(Id1, Id2);
       }
     }
   }
 
-  double getUpdateCost(NodeId Id1, NodeId Id2) {
-    const Node &N1 = T1.Postorder[Id1];
-    const Node &N2 = T2.Postorder[Id2];
-    if (!N1.hasSameType(N2)) {
-      return INFINITY;
+  void dumpForestDist() const {
+    for (int I = 0; I < S1.getSizeS() + 1; ++I) {
+      outs() << "[";
+      for (int J = 0; J < S2.getSizeS() + 1; ++J) {
+        outs() << formatv("{0}{1: 2}", (J == 0 ? "" : " "), ForestDist[I][J]);
+      }
+      outs() << "]\n";
     }
-    if (T1.label(Id1) == T2.label(Id2)) {
-      return 0;
-    }
-    // TODO Use string editing distance if applicable.
-    return 1;
   }
 
   void computeForestDist(NodeId Id1, NodeId Id2) {
-    const Node &N1 = T1.Postorder[Id1 - 1];
-    const Node &N2 = T2.Postorder[Id2 - 1];
+    assert(Id1 > 0 && Id2 > 0);
+    NodeId LMD1 = S1.getLeftMostDescendant(Id1 - 1);
+    NodeId LMD2 = S2.getLeftMostDescendant(Id2 - 1);
 
-    NodeId LMD1 = N1.LeftMostDescendant;
-    NodeId LMD2 = N2.LeftMostDescendant;
-
-    ForestDist[LMD1][LMD2] = 0.0;
+    ForestDist[LMD1][LMD2] = 0;
     for (NodeId D1 = LMD1 + 1; D1 <= Id1; ++D1) {
-      double DeletionCost = 1.0;
+      Score DeletionCost = 1.0;
       ForestDist[D1][LMD2] = ForestDist[D1 - 1][LMD2] + DeletionCost;
       for (NodeId D2 = LMD2 + 1; D2 <= Id2; ++D2) {
-        double InsertionCost = 1.0;
+        Score InsertionCost = 1;
         ForestDist[LMD1][D2] = ForestDist[LMD1][D2 - 1] + InsertionCost;
-        if (T1.Postorder[D1 - 1].LeftMostDescendant == LMD1 &&
-            T2.Postorder[D2 - 1].LeftMostDescendant == LMD2) {
-          double UpdateCost = getUpdateCost(D1, D2);
+        NodeId DLMD1 = S1.getLeftMostDescendant(D1 - 1);
+        NodeId DLMD2 = S2.getLeftMostDescendant(D2 - 1);
+        if (DLMD1 == LMD1 && DLMD2 == LMD2) {
+          Score UpdateCost = getUpdateCost(D1, D2);
           ForestDist[D1][D2] =
               std::min(std::min(ForestDist[D1 - 1][D2] + DeletionCost,
                                 ForestDist[D1][D2 - 1] + InsertionCost),
                        ForestDist[D1 - 1][D2 - 1] + UpdateCost);
-          TreeDist[D1][D2] = TreeDist[D1][D2];
+          TreeDist[D1][D2] = ForestDist[D1][D2];
         } else {
           ForestDist[D1][D2] =
               std::min(std::min(ForestDist[D1 - 1][D2] + DeletionCost,
                                 ForestDist[D1][D2 - 1] + InsertionCost),
-                       ForestDist[LMD1][LMD2] + TreeDist[D1][D2]);
+                       ForestDist[DLMD1][DLMD2] + TreeDist[D1][D2]);
         }
       }
     }
   }
 
 public:
-  ZsMatcher(const TreeRoot &T1, const TreeRoot &T2) : T1(T1), T2(T2) {
-    TreeDist = new double *[T1.NodeCount + 1];
-    ForestDist = new double *[T1.NodeCount + 1];
-    for (int i = 0; i < T1.NodeCount + 1; ++i) {
-      TreeDist[i] = new double[T2.NodeCount + 1]();
-      ForestDist[i] = new double[T2.NodeCount + 1]();
+  ZsMatcher(TreeRoot &T1, TreeRoot &T2, NodeId Id1, NodeId Id2)
+      : S1(T1, Id1), S2(T2, Id2) {
+    TreeDist = new Score *[S1.getSizeS() + 1];
+    ForestDist = new Score *[S1.getSizeS() + 1];
+    for (int I = 0; I < S1.getSizeS() + 1; ++I) {
+      TreeDist[I] = new Score[S2.getSizeS() + 1]();
+      ForestDist[I] = new Score[S2.getSizeS() + 1]();
     }
   }
 
   ~ZsMatcher() {
-    for (int i = 0; i < T1.NodeCount + 1; ++i) {
-      delete[] TreeDist[i];
-      delete[] ForestDist[i];
+    for (int I = 0; I < S1.getSizeS() + 1; ++I) {
+      delete[] TreeDist[I];
+      delete[] ForestDist[I];
     }
     delete[] TreeDist;
     delete[] ForestDist;
@@ -344,10 +427,10 @@ public:
     computeTreeDist();
 
     bool RootNodePair = true;
-    Pairs TreePairs{{T1.NodeCount, T2.NodeCount}};
+    Pairs TreePairs{{S1.getSizeS(), S2.getSizeS()}};
 
     NodeId LastRow, LastCol, FirstRow, FirstCol, Row, Col;
-    while (TreePairs.size() != 0) {
+    while (!TreePairs.empty()) {
       std::tie(LastRow, LastCol) = TreePairs.back();
       TreePairs.pop_back();
 
@@ -357,8 +440,8 @@ public:
 
       RootNodePair = false;
 
-      FirstRow = T1.Postorder[LastRow - 1].LeftMostDescendant;
-      FirstCol = T2.Postorder[LastCol - 1].LeftMostDescendant;
+      FirstRow = S1.getLeftMostDescendant(LastRow - 1);
+      FirstCol = S2.getLeftMostDescendant(LastCol - 1);
 
       Row = LastRow;
       Col = LastCol;
@@ -371,11 +454,12 @@ public:
                    ForestDist[Row][Col - 1] + 1 == ForestDist[Row][Col]) {
           --Col;
         } else {
-          NodeId LMD1 = T1.Postorder[Row - 1].LeftMostDescendant;
-          NodeId LMD2 = T2.Postorder[Col - 1].LeftMostDescendant;
-          if (LMD1 == T1.Postorder[LastRow - 1].LeftMostDescendant &&
-              LMD2 == T2.Postorder[LastCol - 1].LeftMostDescendant) {
-            Matches.emplace_back(Row - 1, Col - 1);
+          NodeId LMD1 = S1.getLeftMostDescendant(Row - 1);
+          NodeId LMD2 = S2.getLeftMostDescendant(Col - 1);
+          if (LMD1 == S1.getLeftMostDescendant(LastRow - 1) &&
+              LMD2 == S2.getLeftMostDescendant(LastCol - 1)) {
+            assert(S1.getNodeS(Row).hasSameType(S2.getNodeS(Col)));
+            Matches.emplace_back(S1.getOriginalId(Row), S2.getOriginalId(Col));
             --Row;
             --Col;
           } else {
@@ -386,7 +470,6 @@ public:
         }
       }
     }
-
     return Matches;
   }
 };

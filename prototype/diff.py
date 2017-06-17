@@ -10,7 +10,9 @@ import sys
 
 import zsmatch
 
-DEBUG = 0
+DEBUG = 1
+BOTTOMUP = 1
+EDITSCRIPT = 1
 
 def debug(*s):
     if DEBUG:
@@ -64,7 +66,6 @@ def add_mapping(M, tsrc, tdst):
     src = tsrc['id']
     dst = tdst['id']
     if mapping_allowed(tsrc, tdst, M):
-        debug('add mapping from %d to %d' % (src, dst))
         do_add_mapping(M, src, dst)
 
 def do_add_mapping(M, src, dst):
@@ -227,6 +228,9 @@ def GTpop(l):
         id = heappop(l)[1]
         node = l.postorder[id]
         nodes += [node]
+    # def idkey(node):
+    #     return node['id']
+    nodes.sort(key=lambda node: node['id'])
     return nodes
 
 def GTalgorithm1(T1, T2, minHeight):
@@ -254,12 +258,9 @@ def GTalgorithm1(T1, T2, minHeight):
         else:
             H1 = GTpop(L1)
             H2 = GTpop(L2)
-            # debug('popped %s and %s' % (len(H1), len(H2)))
             H1xH2 = ((t1, t2) for t1 in H1 for t2 in H2)
             for (t1, t2) in H1xH2:
-                debug('trying to match %s, %s' % (sn(t1), sn(t2)))
                 if isomorphic(t1, t2):
-                    debug('isomorphic!')
                     for (ta, tb) in isomorphic_subtrees(t1, t2):
                         add_mapping(M, ta, tb)
             for t1 in H1:
@@ -331,10 +332,8 @@ def tree2bracketencoding(t):
 #         x = line.strip()
 #         (src, dst) = [int(n) for n in line.strip().split(b'->')]
 #         if src == 0:
-#             # debug("insertion", dst)
 #             pass # node insertion; ignore
 #         elif dst == 0:
-#             # debug("deletion", dst)
 #             pass # node deletion; ignore
 #         mappings += [(src, dst)]
 #     return mappings
@@ -386,10 +385,11 @@ def GTalgorithm2(T1, T2, M, minDice, maxSize):
         matched_children = any(mhasleft(M, c['id']) for c in t1['children'])
         if not matched and matched_children:
             t2 = GTcandidate(t1, M, T2)
-            debug('candidate for', sn(t1), 'is', sn(t2))
             if t2 is not None and GTdice(t1, t2, M) > minDice:
-                add_mapping(M, t1, t2)
-                add_optimal_mappings(t1, t2, M, maxSize)
+                # TODO
+                if mapping_allowed(t1, t2, M):
+                    add_mapping(M, t1, t2)
+                    add_optimal_mappings(t1, t2, M, maxSize)
 
 def indent(t):
     return "" if t['parent'] is None else " " + indent(t['parent'])
@@ -411,16 +411,10 @@ def generate_edit_script(T1, T2, M):
         else:
             p2 = t2['parent']
             pid1 = mright(M, p2['id'])
-            if pid1 is None:
-                assert False
-                # print("parent not mapped, don't know where to insert")
-                continue
+            assert pid1 is not None and "parent not mapped, don't know where to insert"
             p1 = T1postorder[pid1]
-            # print('possible insert %s at parent %s' % (sn(t2), sn(p1)))
-            # print(sn(p1))
             c1 = p1['children']
             c2 = p2['children']
-            # print('searching %d children of node %s' % (len(c1), sn(p1)))
             for pos in range(len(c2)):
                 if c2[pos] is t2:
                     break
@@ -446,7 +440,8 @@ def GTalgorithm(T1, T2, minHeight, minDice, maxSize):
     T1postorder = list(postorder(T1))
     T2postorder = list(postorder(T2))
     M = GTalgorithm1(T1, T2, minHeight)
-    GTalgorithm2(T1, T2, M, minDice, maxSize)
+    if BOTTOMUP:
+        GTalgorithm2(T1, T2, M, minDice, maxSize)
     return M
 
 minHeight = 2
@@ -467,12 +462,13 @@ def generate_gumtree_diff_output(f1, f2):
     T1postorder = list(postorder(T1))
     T2postorder = list(postorder(T2))
     output = ""
-    for id1 in mlefts(M):
-        id2 = mleft(M, id1)
-        t1 = T1postorder[id1]
-        t2 = T2postorder[id2]
-        output += 'Match %s to %s\n' % (sn(t1), sn(t2))
     if 1:
+        for id1 in mlefts(M):
+            id2 = mleft(M, id1)
+            t1 = T1postorder[id1]
+            t2 = T2postorder[id2]
+            output += 'Match %s to %s\n' % (sn(t1), sn(t2))
+    if EDITSCRIPT and BOTTOMUP:
         for a in generate_edit_script(T1, T2, M):
             (act, src) = a[0:2]
             if act == 'Update':

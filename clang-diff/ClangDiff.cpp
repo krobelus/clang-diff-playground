@@ -52,8 +52,7 @@ struct NodeCountVisitor : public RecursiveASTVisitor<NodeCountVisitor> {
 
 using NodeMap = std::map<DynTypedNode, NodeId>;
 
-// Initializes the nodes in the tree, they are stored in postorder
-// in Tree.Postorder.
+// Initializes the nodes in the tree Root.
 //
 // Computes depth of each node as well as the maximum depth of the AST.
 //
@@ -71,7 +70,7 @@ struct PostorderVisitor : public RecursiveASTVisitor<PostorderVisitor> {
       return;
     }
     --Depth;
-    Node &N = Root.Postorder[Id];
+    Node &N = Root.getMutableNode(Id);
     N.Parent = NoNodeId;
     N.LeftMostDescendant = Id;
     N.Depth = Depth;
@@ -104,9 +103,7 @@ struct PostorderVisitor : public RecursiveASTVisitor<PostorderVisitor> {
   }
 };
 
-// Sets the parent and the children of each node.
-//
-// Computes the leftmost descendant of each node.
+// Sets Height, Parent and Children for each node.
 struct PreorderVisitor : public RecursiveASTVisitor<PreorderVisitor> {
   NodeId Parent = -1;
   TreeRoot &Root;
@@ -119,21 +116,28 @@ struct PreorderVisitor : public RecursiveASTVisitor<PreorderVisitor> {
     }
     auto DNode = DynTypedNode::create(*ASTNode);
     const NodeId &Id = PostorderIdMap.at(DNode);
-    Root.Postorder[Id].Parent = Parent;
+    Root.getMutableNode(Id).Parent = Parent;
     if (Parent != NoNodeId) {
-      Node &P = Root.Postorder[Parent];
+      Node &P = Root.getMutableNode(Parent);
       P.LeftMostDescendant = std::min(P.LeftMostDescendant, Id);
       P.Children.push_back(Id);
     }
     Parent = Id;
-    return {Id, Root.Postorder[Id].Parent};
+    return {Id, Root.getNode(Id).Parent};
   }
   void PostTraverse(std::tuple<NodeId, NodeId> State) {
     NodeId Id, PreviousParent;
     std::tie(Id, PreviousParent) = State;
     Parent = PreviousParent;
-    if (Id != NoNodeId && Root.Postorder[Id].Children.empty()) {
-      ++Root.LeafCount;
+    if (Id != NoNodeId) {
+      Node &N = Root.getMutableNode(Id);
+      if (N.isLeaf()) {
+        ++Root.LeafCount;
+      }
+      N.Height = 1;
+      for (NodeId Child : N.Children) {
+        N.Height = std::max(N.Height, 1 + Root.getNode(Child).Height);
+      }
     }
   }
   bool TraverseDecl(Decl *D) {
@@ -165,8 +169,7 @@ static void preprocess(TreeRoot &Root) {
   auto *TUD = Root.ASTUnit->getASTContext().getTranslationUnitDecl();
   NodeCountVisitor NodeCounter;
   NodeCounter.TraverseDecl(TUD);
-  Root.NodeCount = NodeCounter.Count;
-  Root.Postorder = std::vector<Node>(Root.NodeCount);
+  Root.setSize(NodeCounter.Count);
   NodeMap PostorderIdMap;
   PostorderVisitor PostorderWalker(Root, PostorderIdMap);
   PostorderWalker.TraverseDecl(TUD);
@@ -184,8 +187,8 @@ private:
   // Returns true if the two subtrees have the same structure
   // and equal node kinds (does not compare labels).
   bool isomorphic(NodeId Id1, NodeId Id2) const {
-    const Node &N1 = T1.Postorder[Id1];
-    const Node &N2 = T2.Postorder[Id2];
+    const Node &N1 = T1.getNode(Id1);
+    const Node &N2 = T2.getNode(Id2);
     if (!N1.hasSameType(N2) || N1.Children.size() != N2.Children.size() ||
         T1.label(Id1) != T2.label(Id2)) {
       return false;
@@ -198,27 +201,27 @@ private:
     return true;
   }
 
-  // TODO This may be too restrictive, we may want to allow multiple mappings
+  // TODO This is too restrictive, we want to allow multiple mapping candidates
   // for nodes and resolve the ambiguity later.
   bool isMappingAllowed(const Mappings &M, NodeId Id1, NodeId Id2) const {
-    const Node &N1 = T1.Postorder[Id1];
-    const Node &N2 = T2.Postorder[Id2];
+    const Node &N1 = T1.getNode(Id1);
+    const Node &N2 = T2.getNode(Id2);
     bool AnyMapped = M.hasSrc(Id1) || M.hasDst(Id2);
     bool SameType = N1.hasSameType(N2);
     NodeId P1 = N1.Parent;
     NodeId P2 = N2.Parent;
-    bool ParentsSameType =
-        P1 == P2 || (P1 != NoNodeId && P2 != NoNodeId &&
-                     T1.Postorder[P1].hasSameType(T2.Postorder[P2]));
-    return not AnyMapped && SameType && ParentsSameType;
+    bool ParentsSameType = (P1 == NoNodeId && P2 == NoNodeId) ||
+                           (P1 != NoNodeId && P2 != NoNodeId &&
+                            T1.getNode(P1).hasSameType(T2.getNode(P2)));
+    return !AnyMapped && SameType && ParentsSameType;
   }
 
   // Adds all corresponding subtrees of the two nodes to the mappings.
   // The two nodes must be isomorphic.
   void addIsomorphicSubTrees(Mappings &M, NodeId Id1, NodeId Id2) const {
     M.link(Id1, Id2);
-    const Node &N1 = T1.Postorder[Id1];
-    const Node &N2 = T2.Postorder[Id2];
+    const Node &N1 = T1.getNode(Id1);
+    const Node &N2 = T2.getNode(Id2);
     assert(isomorphic(Id1, Id2));
     assert(N1.Children.size() == N2.Children.size());
     for (size_t Id = 0; Id < N1.Children.size(); ++Id) {
@@ -228,16 +231,16 @@ private:
 
   // Uses an optimal albeit slow algorithm to compute mappings for two
   // subtrees, but only if both have fewer nodes than MaxSize.
-  void addOptimalMappings(Mappings &M, NodeId Id1, NodeId Id2) const {
+  void addOptimalMappings(Mappings &M, NodeId Id1, NodeId Id2) /*const*/ {
     if (std::max(T1.numberOfDescendants(Id1), T2.numberOfDescendants(Id2)) <
         MaxSize) {
-      ZsMatcher Matcher(T1, T2);
+      ZsMatcher Matcher(T1, T2, Id1, Id2);
       std::vector<std::pair<NodeId, NodeId>> R = Matcher.match();
       for (const auto Tuple : R) {
-        NodeId Id1 = Tuple.first;
-        NodeId Id2 = Tuple.second;
-        if (isMappingAllowed(M, Id1, Id2)) {
-          M.link(Id1, Id2);
+        NodeId Src = Tuple.first;
+        NodeId Dst = Tuple.second;
+        if (isMappingAllowed(M, Src, Dst)) {
+          M.link(Src, Dst);
         }
       }
     }
@@ -250,7 +253,7 @@ private:
       return 0.0;
     }
     int CommonDescendants = 0;
-    const Node &N1 = T1.Postorder[Id1];
+    const Node &N1 = T1.getNode(Id1);
     for (NodeId Id = N1.LeftMostDescendant; Id < Id1; ++Id) {
       CommonDescendants += int(M.hasSrc(Id));
     }
@@ -262,9 +265,9 @@ private:
   NodeId findCandidate(const Mappings &M, NodeId Id1) const {
     NodeId Candidate = NoNodeId;
     double BestDiceValue = 0.0;
-    const Node &N1 = T1.Postorder[Id1];
-    for (NodeId Id2 = 0; Id2 < T2.NodeCount; ++Id2) {
-      const Node &N2 = T2.Postorder[Id2];
+    const Node &N1 = T1.getNode(Id1);
+    for (NodeId Id2 = 0; Id2 < T2.getSize(); ++Id2) {
+      const Node &N2 = T2.getNode(Id2);
       if (!N1.hasSameType(N2)) {
         continue;
       }
@@ -281,15 +284,15 @@ private:
   }
 
   // Tries to match any yet unmapped nodes, in a bottom-up fashion.
-  void matchBottomUp(Mappings &M) const {
-    for (NodeId Id1 = 0; Id1 < T1.NodeCount; ++Id1) {
+  void matchBottomUp(Mappings &M) /*const*/ {
+    for (NodeId Id1 = 0; Id1 < T1.getSize(); ++Id1) {
       if (Id1 == T1.root()) {
         M.link(T1.root(), T2.root());
         addOptimalMappings(M, T1.root(), T2.root());
         break;
       }
       assert(Id1 != NoNodeId);
-      const Node &N1 = T1.Postorder[Id1];
+      const Node &N1 = T1.getNode(Id1);
       bool Matched = M.hasSrc(Id1);
       bool MatchedChildren =
           std::any_of(N1.Children.begin(), N1.Children.end(),
@@ -298,7 +301,7 @@ private:
         continue;
       }
       NodeId Id2 = findCandidate(M, Id1);
-      if (Id2 == NoNodeId || dice(M, Id1, Id2) > MinDice ||
+      if (Id2 == NoNodeId || dice(M, Id1, Id2) < MinDice ||
           !isMappingAllowed(M, Id1, Id2)) {
         continue;
       }
@@ -342,12 +345,12 @@ private:
         }
       }
       for (NodeId Id1 : H1) {
-        if (M.hasSrc(Id1)) {
+        if (!M.hasSrc(Id1)) {
           L1.open(Id1);
         }
       }
       for (NodeId Id2 : H2) {
-        if (M.hasDst(Id2)) {
+        if (!M.hasDst(Id2)) {
           L2.open(Id2);
         }
       }
@@ -359,55 +362,52 @@ private:
 
   using Change = std::tuple<ChangeKind, NodeId, NodeId, size_t>;
 
-  // Finds an edit script that is the difference between the two trees.
+  // Finds an edit script that converts T1 to T2.
   std::vector<Change> computeChanges(Mappings &M) {
     std::vector<Change> Changes;
-    for (NodeId Id2 = 0; Id2 < T2.NodeCount; ++Id2) {
-      const Node &N2 = T2.Postorder[Id2];
+    for (NodeId Id2 : T2.getSubtreeBfs(T2.root())) {
+      const Node &N2 = T2.getNode(Id2);
       NodeId Id1 = M.getSrc(Id2);
       if (Id1 != NoNodeId) {
-        const Node &N1 = T1.Postorder[Id1];
+        const Node &N1 = T1.getNode(Id1);
         assert(N1.hasSameType(N2));
         if (T1.label(Id1) != T2.label(Id2)) {
           Changes.emplace_back(Update, Id1, Id2, /*UNUSED Position=*/0);
         }
-      } else {
-        NodeId P2 = N2.Parent;
-        NodeId P1 = M.getDst(P2);
-        assert(P1 != NoNodeId);
-        Node &Parent1 = T1.Postorder[P1];
-        const Node &Parent2 = T2.Postorder[P2];
-        auto &Siblings1 = Parent1.Children;
-        const auto &Siblings2 = Parent2.Children;
-        size_t Position;
-        for (Position = 0; Position < Siblings2.size(); ++Position) {
-          if (Siblings2[Position] == Id2 || Position >= Siblings1.size()) {
-            break;
-          }
-        }
-        llvm::errs() << Position << "\n";
-        Changes.emplace_back(Insert, Id2, P2, Position);
-        Node PatchNode = N2;
-        PatchNode.Parent = P1;
-        PatchNode.Children.clear();
-        // TODO update Depth etc
-        const NodeId PatchNodeId = T1.Postorder.size();
-        T1.Postorder.push_back(PatchNode);
-        // TODO this may be costly
-        Siblings1.insert(Siblings1.begin() + Position, PatchNodeId);
-        M.link(PatchNodeId, Id2);
-        /*
-        */
+        continue;
       }
+      NodeId P2 = N2.Parent;
+      NodeId P1 = M.getSrc(P2);
+      assert(P1 != NoNodeId);
+      Node &Parent1 = T1.getMutableNode(P1);
+      const Node &Parent2 = T2.getNode(P2);
+      auto &Siblings1 = Parent1.Children;
+      const auto &Siblings2 = Parent2.Children;
+      size_t Position;
+      for (Position = 0; Position < Siblings2.size(); ++Position) {
+        if (Siblings2[Position] == Id2 || Position >= Siblings1.size()) {
+          break;
+        }
+      }
+      Changes.emplace_back(Insert, Id2, P2, Position);
+      Node PatchNode;
+      PatchNode.Parent = P1;
+      PatchNode.LeftMostDescendant = N2.LeftMostDescendant;
+      PatchNode.Depth = N2.Depth;
+      PatchNode.ASTNode = N2.ASTNode;
+      // TODO update Depth if needed
+      NodeId PatchNodeId = T1.getSize();
+      T1.addNode(PatchNode);
+      // TODO maybe choose a different data structure for Children.
+      Siblings1.insert(Siblings1.begin() + Position, PatchNodeId);
+      M.link(PatchNodeId, Id2);
     }
-#if 0
-    for (NodeId Id1 = 0; Id1 < T1.NodeCount; ++Id1) {
+    for (NodeId Id1 = 0; Id1 < T1.getSize(); ++Id1) {
       NodeId Id2 = M.getDst(Id1);
       if (Id2 == NoNodeId) {
         Changes.emplace_back(Delete, Id1, Id2, /*UNUSED Position=*/0);
       }
     }
-#endif
     return Changes;
   }
 
@@ -423,26 +423,23 @@ private:
       S = formatv("Delete {0}", T1.showNode(Id1));
       break;
     case Update:
-      S = formatv("Update {0} to {1}", T1.showNode(Id1), T2.showNode(Id2));
+      S = formatv("Update {0} to {1}", T1.showNode(Id1), T2.label(Id2));
       break;
     case Insert:
-      S = formatv("Insert {0} to {1} at {2}", T1.showNode(Id1),
+      S = formatv("Insert {0} into {1} at {2}", T2.showNode(Id1),
                   T2.showNode(Id2), Position);
       break;
     case Move:
+      llvm_unreachable("TODO");
       break;
     };
-    llvm::errs() << S << "\n";
+    outs() << S << "\n";
   }
 
   void match() {
     Mappings M = matchTopDown();
     matchBottomUp(M);
-    M.dump();
-    llvm::errs() << "T1\n";
-    T1.dump();
-    llvm::errs() << "T2\n";
-    T2.dump();
+    M.dumpMapping();
     auto Changes = computeChanges(M);
     for (const auto &C : Changes) {
       dumpChange(C);
@@ -450,8 +447,7 @@ private:
   }
 
 public:
-  // FIXME 1 is probably too fine-grained
-  int MinHeight = 1;
+  int MinHeight = 2;
   double MinDice = 0.2;
   int MaxSize = 100;
 
@@ -477,18 +473,38 @@ public:
 
 static cl::OptionCategory ClangDiffCategory("clang-diff options");
 
+static cl::opt<bool>
+    DumpAST("ast-dump",
+            cl::desc("Print the internal representation of the AST as JSON."),
+            cl::init(false), cl::cat(ClangDiffCategory));
+
 int main(int argc, const char **argv) {
   CommonOptionsParser Options(argc, argv, ClangDiffCategory);
   ArrayRef<std::string> Files = Options.getSourcePathList();
 
+  tooling::ClangTool Tool(Options.getCompilations(), Files);
+
+  if (DumpAST) {
+    if (Files.size() != 1) {
+      errs() << "Error: specify one filename to serialize.\n";
+      return 1;
+    }
+    std::vector<std::unique_ptr<ASTUnit>> ASTs;
+    Tool.buildASTs(ASTs);
+    if (ASTs.size() != 1) {
+      return 1;
+    }
+    clang::diff::TreeRoot Tree;
+    Tree.ASTUnit = std::move(ASTs[0]);
+    clang::diff::preprocess(Tree);
+    Tree.dumpAsJson();
+    return 0;
+  }
   if (Files.size() != 2) {
-    llvm::errs() << "Error: Exactly two filenames are required.\n";
+    errs() << "Error: exactly two filenames are required.\n";
     return 1;
   }
-
-  tooling::ClangTool Tool(Options.getCompilations(), Files);
   clang::diff::ClangDiff ClangDiff(Tool);
-
   bool Success = ClangDiff.runDiff(Files[0], Files[1]);
   return Success ? 0 : 1;
 }
