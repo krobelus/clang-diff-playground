@@ -2,17 +2,12 @@ import collections
 import numpy as np
 import math
 
+from common import *
+
 def updateCost(src, dst):
-    if src['typeLabel'] != dst['typeLabel']:
+    if src[TYPE] != dst[TYPE]:
         return math.inf
-    return 1 - int(src.get('label') == dst.get('label'))
-
-def gettype(t):
-    return t['typeLabel']
-
-def label(t):
-    """Return the full label of a node."""
-    return (t['typeLabel'], t.get('label'))
+    return 1 - int(src.get(VALUE) == dst.get(VALUE))
 
 def postorder(t):
     """Generate all subtrees in postorder fashion."""
@@ -32,39 +27,36 @@ def getFirstLeaf(t):
 
 class ZsTree:
     def __init__(self, t):
-        self.labels = list(postorder(t)) 
-        self.start = self.labels[0]['id']
-        self.nodeCount = len(self.labels)
+        self.nodes = list(postorder(t)) 
+        self.start = self.nodes[0]['id']
+        self.nodeCount = len(self.nodes)
         self.leafCount = 0
-        self.llds = np.zeros(self.nodeCount, int)
+        self.lmds = np.zeros(self.nodeCount, int)
         self.keyroots = None
 
-        for i in range(len(self.labels)):
-            n = self.labels[i]
+        for i in range(len(self.nodes)):
+            n = self.nodes[i]
+            # debug(n['id'], self.start, i, getFirstLeaf(n)['id'])
             assert n['id'] - self.start == i
-            self.llds[i] = getFirstLeaf(n)['id'] - self.start
+            self.lmds[i] = getFirstLeaf(n)['id'] - self.start
             if isLeaf(n):
                 self.leafCount += 1
+        # debug('lmd of 10', self.lmds[10])
+        # print('lmds', self.lmds)
 
         self.keyroots = np.zeros(self.leafCount, int)
         visited = np.zeros(self.nodeCount + 1, bool)
         k = self.leafCount - 1
         for i in range(self.nodeCount, 0, -1):
-            if not visited[self.llds[i - 1]]:
+            if not visited[self.lmds[i - 1]]:
                 assert k >= 0
                 self.keyroots[k] = i
-                visited[self.llds[i - 1]] = True
+                visited[self.lmds[i - 1]] = True
                 k -= 1
         if 0:
             print('start', self.start)
-            print('llds', self.llds)
+            print('lmds', self.lmds)
             print('keyroots', self.keyroots)
-
-    # def lld(self, i):
-    #     return self.llds[i - 1] + 1
-
-    # def tree(self, i):
-    #     return self.labels[i - 1]
 
     def valid(self, i):
         return i >= 0 and i < self.nodeCount
@@ -88,8 +80,8 @@ class ZsMatcher:
 
     def computeForestDist(self, i, j):
         assert i > 0 and j > 0
-        lmdi = self.src.llds[i - 1]
-        lmdj = self.dst.llds[j - 1]
+        lmdi = self.src.lmds[i - 1]
+        lmdj = self.dst.lmds[j - 1]
         self.forestDist[lmdi][lmdj] = 0
         for di in range(lmdi + 1, i + 1):
             costDel = 1
@@ -99,11 +91,11 @@ class ZsMatcher:
                 costIns = 1
                 self.forestDist[lmdi][dj] = (
                     self.forestDist[lmdi][dj - 1] + costIns)
-                dlmdi = self.src.llds[di - 1]
-                dlmdj = self.dst.llds[dj - 1]
+                dlmdi = self.src.lmds[di - 1]
+                dlmdj = self.dst.lmds[dj - 1]
                 if (dlmdi == lmdi and dlmdj == lmdj):
                     assert self.src.valid(di - 1) and self.dst.valid(dj - 1)
-                    costUpd = updateCost(self.src.labels[di - 1], self.dst.labels[dj - 1])
+                    costUpd = updateCost(self.src.nodes[di - 1], self.dst.nodes[dj - 1])
                     self.forestDist[di][dj] = min(
                         self.forestDist[di - 1][dj] + costDel,
                         self.forestDist[di][dj - 1] + costIns,
@@ -137,8 +129,8 @@ class ZsMatcher:
 
             rootNodePair = False
 
-            firstRow = self.src.llds[lastRow - 1]
-            firstCol = self.dst.llds[lastCol - 1]
+            firstRow = self.src.lmds[lastRow - 1]
+            firstCol = self.dst.lmds[lastCol - 1]
 
             row = lastRow
             col = lastCol
@@ -151,13 +143,13 @@ class ZsMatcher:
                       self.forestDist[row][col]):
                     col -= 1
                 else:
-                    lmdr = self.src.llds[row - 1]
-                    lmdc = self.dst.llds[col - 1]
-                    if (lmdr == self.src.llds[lastRow - 1]  and
-                        lmdc == self.dst.llds[lastCol - 1]):
-                        tSrc = self.src.labels[row - 1]
-                        tDst = self.dst.labels[col - 1]
-                        assert tSrc['typeLabel'] == tDst['typeLabel']
+                    lmdr = self.src.lmds[row - 1]
+                    lmdc = self.dst.lmds[col - 1]
+                    if (lmdr == self.src.lmds[lastRow - 1]  and
+                        lmdc == self.dst.lmds[lastCol - 1]):
+                        tSrc = self.src.nodes[row - 1]
+                        tDst = self.dst.nodes[col - 1]
+                        assert tSrc[TYPE] == tDst[TYPE]
                         mappings += [(tSrc['id'] - self.src.start,
                                       tDst['id'] - self.dst.start)]
                         row -= 1

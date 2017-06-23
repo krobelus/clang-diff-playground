@@ -8,33 +8,14 @@ import os
 from os.path import abspath, dirname, realpath
 import sys
 
+from common import *
+
 import zsmatch
-
-DEBUG = 1
-BOTTOMUP = 1
-EDITSCRIPT = 1
-
-def debug(*s):
-    if DEBUG:
-        print(*s)
-
-# node attributes:
-# - children: list of child trees
-# - type: type code
-# - typeLabel: string representation of the type code
-# - pos: source pos
-# - length: source length
-# - [label]: (optional) actual string value (name, literals)
-
-# additional attributes
-# height
-# parent
-# id
 
 def fake_tree():
     return {
         'id': -1,
-        'typeLabel': '',
+        TYPE: '',
         'children': [],
         'parent': None,
     }
@@ -116,7 +97,7 @@ def lhasright(A, id2):
 
 def label(t):
     """Return the full label of a node."""
-    return (t['typeLabel'], t.get('label'))
+    return (t[TYPE], t.get(VALUE))
 
 def isomorphic(t1, t2):
     """Compute whether two subtrees are isomorphic."""
@@ -143,7 +124,7 @@ def initialize_tree(t, id=0, parent=None):
     """
     height = 0
     def nodekey(node):
-        return (node['typeLabel'], node.get('label'))
+        return (node[TYPE], node.get(VALUE))
     # sorted(t['children'], key=nodekey)
     for c in t['children']:
         (id, child_height) = initialize_tree(c, id, t)
@@ -154,12 +135,22 @@ def initialize_tree(t, id=0, parent=None):
     t['id'] = id
     return (id + 1, height)
 
+def np(t):
+    """Return the position of the node amongst its siblings."""
+    p = t['parent']
+    if p is None:
+        return 0
+    for i in range(len(p['children'])):
+        if p['children'][i] is t:
+            return i
+    assert False
+
 def sn(t):
     """Return a string representation of the node."""
     if t is None:
         return 'None'
-    label = ('' if 'label' not in t else ': ' + t['label'])
-    return '%s%s(%d)' % (t['typeLabel'], label, t['id'])
+    label = ('' if VALUE not in t else ': ' + t[VALUE])
+    return '%s%s(%d)' % (t[TYPE], label, t['id'])
 
 def print_node(t):
     print(sn(t))
@@ -167,7 +158,7 @@ def print_node(t):
 def pretty_print(t, *, file=None):
     for n in preorder(t):
         print('%s%02d %s:%s' %
-              (indent(n), n['id'], n['typeLabel'], n.get('label')), file=file)
+              (indent(n), n['id'], n[TYPE], n.get(VALUE)), file=file)
 
 def GTopen(t, l):
     """Insert all children of subtree t into l."""
@@ -297,8 +288,8 @@ def GTcandidate(t1, M, T):
     """
     t2 = None
     bestdice = 0
-    for c in postorder(T):
-        if c['typeLabel'] != t1['typeLabel']:
+    for c in preorder(T):
+        if c[TYPE] != t1[TYPE]:
             continue
         if mhasright(M, c['id']):
             continue
@@ -310,7 +301,7 @@ def GTcandidate(t1, M, T):
 
 def tree2bracketencoding(t):
     # node = '%s:%s' % ('n', '')
-    node = '%s-%s' % (t['typeLabel'], t.get('label', ''))
+    node = '%s-%s' % (t[TYPE], t.get(VALUE, ''))
     children = ''.join(map(tree2bracketencoding, t['children']))
     return '{%s%s}' % (node, children)
 
@@ -340,12 +331,12 @@ def tree2bracketencoding(t):
 
 def mapping_allowed(ta, tb, M):
     a_mapsto_b = mleft(M, ta['id']) == tb['id']
-    sametype = ta['typeLabel'] == tb['typeLabel']
+    sametype = ta[TYPE] == tb[TYPE]
     pa = ta['parent']
     pb = tb['parent']
     parents_sametype = ((pa is None and pb is None) or
         (pa is not None and pb is not None and
-        pa['typeLabel'] == pb['typeLabel'])
+        pa[TYPE] == pb[TYPE])
     )
     # TODO is this always desirable
     either_mapped = mhasleft(M, ta['id']) or mhasright(M, tb['id'])
@@ -388,7 +379,8 @@ def GTalgorithm2(T1, T2, M, minDice, maxSize):
             if t2 is not None and GTdice(t1, t2, M) > minDice:
                 # TODO
                 if mapping_allowed(t1, t2, M):
-                    add_mapping(M, t1, t2)
+                    # debug('linking node', sn(t1), sn(t2))
+                    do_add_mapping(M, t1['id'], t2['id'])
                     add_optimal_mappings(t1, t2, M, maxSize)
 
 def indent(t):
@@ -399,16 +391,103 @@ def indent(t):
 # delete(t) - removes the leaf node t
 # move(t, tp, i) - move t to be the ith child of tp
 
+INV = -1
+class EditableTree:
+    def __init__(self, root, M):
+        self.root = root
+        self.M = M
+        self.po = list(postorder(self.root))
+        self.old2new = {}
+    def getnode(self, id):
+        assert self.old2new.get(id) != INV
+        return self.po[id]
+    def movenode(self, t, dst, pos):
+        print('moving node', sn(t1), pos1, 'to', sn(dst), pos)
+        self.removenode(t)
+        self.insertnode(t, dst, pos)
+        # pretty_print(self.root)
+        # sys.exit(0)
+    def nodeisvalid(self, t):
+        if self.old2new.get(id) == INV:
+            return False
+        if t['parent'] is None:
+            return True
+        return nodeisvalid(t['parent'])
+    def removenode(self, t):
+        print('removenode', sn(t))
+        id = t['id']
+        if t['parent'] is not None:
+            pos = np(t)
+            t['parent']['children'].pop(pos)
+            # print('parent', [c['id'] for c in t['parent']['children']])
+        self.old2new[id] = None
+        # if mhasleft(self.M, id):
+        #     pass
+    def insertnode(self, t, tdst):
+        pos = np(tdst)
+        print('insertnode', sn(t), 'at', pos)
+        assert tdst['parent'] is not None
+        p2 = tdst['parent']
+        p1 = self.getnode(mright(self.M, p2['id']))
+        p1['children'].insert(pos, t)
+        t['parent'] = p1
+        self.old2new[id] = id
+
+MAT, UPD, DEL, INS, MOV = 1, 1, 1, 1, 0
+
 def generate_edit_script(T1, T2, M):
+    # T1 = EditableTree(T1, M)
     T1postorder = list(postorder(T1))
     T2postorder = list(postorder(T2))
     actions = []
     for t2 in bfs(T2):
         if mhasright(M, t2['id']):
+            if not UPD:
+                continue
+            # t1 = T1.getnode(mright(M, t2['id']))
             t1 = T1postorder[mright(M, t2['id'])]
-            if t1.get('label') != t2.get('label'):
+            if t1.get(VALUE) != t2.get(VALUE):
                 actions += [('Update', t1, t2)]
+            same_parents = ((t1['parent'] is None and
+                             t2['parent'] is None) or
+                            (t1['parent'] is not None and
+                             t2['parent'] is not None and
+                             mleft(M, t1['parent']['id']) == t2['parent']['id'])
+                            )
+            if not MOV:
+                continue
+            if t1['parent'] is None or t2['parent'] is None:
+                continue
+            pos1 = np(t1)
+            pos2 = np(t2)
+            # print('pos for node', sn(t1), 'is', np(t1))
+            if not same_parents or pos1 != pos2:
+                print('parent', [c['id'] for c in t1['parent']['children']])
+                p1 = t1['parent']
+                p2 = t2['parent']
+                dst = T1.getnode(mright(M, p2['id']))
+                pos = np(t2)
+                children = p1['children']
+                T1.movenode(t1, dst, pos)
+                if 0:
+                    for i in range(pos1 + 1, pos2):
+                        if i + 1 == len(children):
+                            assert 0
+                        # print('shifting %s to %s' % (i+1, i))
+                        children[i] = children[i + 1]
+                    # for i in range(pos2 + 1, len(children)):
+                    for i in range(len(children) - 1, pos2, -1):
+                        # print('shifting %s to %s' % (i-1, i))
+                        children[i] = children[i - 1]
+                    # print('inserting at %s' % pos2)
+                    # t1ids[t1['id']]
+                    children[pos2] = t1
+                    actions += [('Move', t1, p2, pos2)]
+                    # print('parent', [c['id'] for c in t1['parent']['children']])
+                    # import sys; sys.exit()
         else:
+            if not INS:
+                continue
             p2 = t2['parent']
             pid1 = mright(M, p2['id'])
             assert pid1 is not None and "parent not mapped, don't know where to insert"
@@ -418,11 +497,8 @@ def generate_edit_script(T1, T2, M):
             for pos in range(len(c2)):
                 if c2[pos] is t2:
                     break
-                # if not mhasleft(M, c1[pos]):
-                #     break
             if pos > len(c1):
                 pos = len(c1)
-            # pos = max(pos, len(c1))
             actions += [('Insert', t2, p2, pos)]
             new = dict(t2)
             new['id'] = len(T1postorder)
@@ -431,9 +507,14 @@ def generate_edit_script(T1, T2, M):
             T1postorder += [new]
             c1.insert(pos, new)
             do_add_mapping(M, new['id'], t2['id'])
-    for t1 in postorder(T1):
-        if not mhasleft(M, t1['id']):
-            actions += [('Delete', t1, None)]
+            pass
+    if DEL:
+        for t1 in T1postorder:
+            if not mhasleft(M, t1['id']):
+                if t1['parent'] is not None:
+                    t1['parent']['children'].pop(np(t1))
+                actions += [('Delete', t1, None)]
+    # pretty_print(T1.root)
     return actions
 
 def GTalgorithm(T1, T2, minHeight, minDice, maxSize):
@@ -462,17 +543,20 @@ def generate_gumtree_diff_output(f1, f2):
     T1postorder = list(postorder(T1))
     T2postorder = list(postorder(T2))
     output = ""
-    if 1:
-        for id1 in mlefts(M):
-            id2 = mleft(M, id1)
-            t1 = T1postorder[id1]
-            t2 = T2postorder[id2]
-            output += 'Match %s to %s\n' % (sn(t1), sn(t2))
+    if MAT:
+        # for (NodeId Id1 = 0, Id2, E = T1.getSize(); Id1 < E; ++Id1)
+        #   if ((Id2 = getDst(Id1)) != InvalidNodeId)
+        # OS << formatv("Match {0} to {1}\n", T1.showNode(Id1), T2.showNode(Id2));
+        for t1 in preorder(T1):
+            id2 = mleft(M, t1['id'])
+            if id2 is not None:
+                t2 = T2postorder[id2]
+                output += 'Match %s to %s\n' % (sn(t1), sn(t2))
     if EDITSCRIPT and BOTTOMUP:
         for a in generate_edit_script(T1, T2, M):
             (act, src) = a[0:2]
             if act == 'Update':
-                output += 'Update %s to %s\n' % (sn(src), a[2]['label'])
+                output += 'Update %s to %s\n' % (sn(src), a[2][VALUE])
             elif act == 'Delete':
                 output += 'Delete %s\n' % sn(src)
             elif act in ('Insert', 'Move'):

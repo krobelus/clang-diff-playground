@@ -1,3 +1,3 @@
 class Foo {
-  int a, b;
+  int b, a;
 };
