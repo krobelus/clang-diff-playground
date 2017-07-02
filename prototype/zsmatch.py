@@ -1,13 +1,17 @@
-import collections
 import numpy as np
-import math
+from math import inf
 
 from common import *
 
 def updateCost(src, dst):
     if src[TYPE] != dst[TYPE]:
-        return math.inf
-    return 1 - int(src.get(VALUE) == dst.get(VALUE))
+        return inf
+    l = src.get(VALUE, '')
+    r = dst.get(VALUE, '')
+    return l != r
+    # import editdistance
+    # print(editdistance.eval(l, r), file=sys.stderr)
+    # return editdistance.eval(l, r)
 
 def postorder(t):
     """Generate all subtrees in postorder fashion."""
@@ -53,15 +57,11 @@ class ZsTree:
                 self.keyroots[k] = i
                 visited[self.lmds[i - 1]] = True
                 k -= 1
-        if 0:
-            print('start', self.start)
-            print('lmds', self.lmds)
-            print('keyroots', self.keyroots)
 
     def valid(self, i):
         return i >= 0 and i < self.nodeCount
 
-class ZsMatcher:
+class zhang_shasha_matcher:
     def __init__(self, src, dst):
         self.src = ZsTree(src)
         self.dst = ZsTree(dst)
@@ -71,9 +71,6 @@ class ZsMatcher:
     def computeTreeDist(self):
         self.treeDist = np.zeros((self.src.nodeCount + 1, self.dst.nodeCount + 1), int)
         self.forestDist = np.zeros((self.src.nodeCount + 1, self.dst.nodeCount + 1), int)
-        # for i in range(1, len(self.src.keyroots)):
-        #     for j in range(1, len(self.dst.keyroots)):
-                # self.computeForestDist(self.src.keyroots[i], self.dst.keyroots[j])
         for i in self.src.keyroots:
             for j in self.dst.keyroots:
                 self.computeForestDist(i, j)
@@ -106,12 +103,6 @@ class ZsMatcher:
                         self.forestDist[di - 1][dj] + costDel,
                         self.forestDist[di][dj - 1] + costIns,
                         self.forestDist[dlmdi][dlmdj] + self.treeDist[di][dj])
-        if 0:
-            for i in range(self.src.nodeCount + 1):
-                print('[', end='')
-                for j in range(self.dst.nodeCount + 1):
-                    print(' %2d' % self.forestDist[i][j], end='')
-                print(']')
 
     def match(self):
         mappings = []
