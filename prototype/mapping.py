@@ -1,21 +1,28 @@
 from collections import defaultdict
+from common import *
 
 class mapping:
     def __init__(self):
         self.src2dst = defaultdict(list)
         self.dst2src = defaultdict(list)
+        self.maxsize = None
     def add(self, tsrc, tdst):
+        if dpred(tsrc):
+            debug('adding', sn(tsrc), 'to', sn(tdst))
         src = tsrc['id']
         dst = tdst['id']
         self.link(src, dst)
     def link(self, src, dst):
         self.src2dst[src] += [dst]
         self.dst2src[dst] += [src]
+    def unlink(self, src, dst):
+        del self.src2dst[src]
+        del self.dst2src[dst]
     def get_dsts(self, src):
         return self.src2dst[src]
     def get_srcs(self, dst=None):
         if dst is None:
-            return list(self.src2dst)
+            return [src for src in self.src2dst if self.src2dst[src]]
         return self.dst2src[dst]
     def get_dst(self, src):
         return self.get_dsts(src)[0]

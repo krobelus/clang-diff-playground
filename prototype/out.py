@@ -25,36 +25,6 @@ def generate_edit_script(T1, T2, M):
             t1 = T1.npostorder[M.get_src(t2['id'])]
             if t1.get(VALUE) != t2.get(VALUE):
                 actions += [('Update', t1, t2)]
-
-            if t1['parent'] is None or t2['parent'] is None:
-                continue
-
-            same_parents = ((t1['parent'] is None and
-                             t2['parent'] is None) or
-                            (t1['parent'] is not None and
-                             t2['parent'] is not None and
-                             M.get_dst(t1['parent']['id']) == t2['parent']['id'])
-                            )
-            # pos1 = findpos(t1)
-            # pos2 = findpos(t2)
-            # if not same_parents or pos1 != pos2:
-            #     print('parent', [c['id'] for c in t1['parent']['children']])
-            #     p1 = t1['parent']
-            #     p2 = t2['parent']
-            #     dst = T1.npostorder[M.get_src(p2['id'])]
-            #     pos = findpos(t2)
-            #     children = p1['children']
-            #     T1.movenode(t1, dst, pos)
-            #     if 0:
-            #         for i in range(pos1 + 1, pos2):
-            #             if i + 1 == len(children):
-            #                 assert 0
-            #             children[i] = children[i + 1]
-            #         # for i in range(pos2 + 1, len(children)):
-            #         for i in range(len(children) - 1, pos2, -1):
-            #             children[i] = children[i - 1]
-            #         children[pos2] = t1
-            #         actions += [('Move', t1, p2, pos2)]
         else:
             p2 = t2['parent']
             pid1 = M.get_src(p2['id'])
@@ -80,6 +50,10 @@ def generate_edit_script(T1, T2, M):
             if t1['parent'] is not None:
                 t1['parent']['children'].pop(findpos(t1))
             actions += [('Delete', t1, None)]
+    for t1 in T1.npostorder:
+        if 'm' in t1['change']:
+            t2 = T1.npostorder[M.get_dst(t1['id'])]
+            actions += [('Move', t1, t2['parent'], findpos(t2) + 1)]
     return actions
 
 # # def APTEDmapping(t1, t2):
@@ -128,3 +102,16 @@ def generate_edit_script(T1, T2, M):
 #     data = json.load(open(treefilename))
 #     return Tree(data)
 
+            # if 0:
+            #     if t1['parent'] is None or t2['parent'] is None:
+            #         continue
+            #     # pos1 = findpos(t1)
+            #     # pos2 = findpos(t2)
+            #     if not same_parents(t1, t2, M):
+            #         p1 = t1['parent']
+            #         p2 = t2['parent']
+            #         # dst = T1.npostorder[M.get_src(p2['id'])]
+            #         pos = findpos(t2)
+            #         actions += [('Move', t1, p2, pos)]
+            #         # TODO patch
+            #         # TODO different positions

@@ -3,16 +3,6 @@ from math import inf
 
 from common import *
 
-def updateCost(src, dst):
-    if src[TYPE] != dst[TYPE]:
-        return inf
-    l = src.get(VALUE, '')
-    r = dst.get(VALUE, '')
-    return l != r
-    # import editdistance
-    # print(editdistance.eval(l, r), file=sys.stderr)
-    # return editdistance.eval(l, r)
-
 def postorder(t):
     """Generate all subtrees in postorder fashion."""
     for c in t['children']:
@@ -140,7 +130,8 @@ class zhang_shasha_matcher:
                         lmdc == self.dst.lmds[lastCol - 1]):
                         tSrc = self.src.nodes[row - 1]
                         tDst = self.dst.nodes[col - 1]
-                        assert tSrc[TYPE] == tDst[TYPE]
+                        assert is_mapping_allowed(tSrc, tDst)
+                        # assert tSrc[TYPE] == tDst[TYPE]
                         mappings += [(tSrc['id'] - self.src.start,
                                       tDst['id'] - self.dst.start)]
                         row -= 1
